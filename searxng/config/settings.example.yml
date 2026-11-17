@@ -1,0 +1,14 @@
+# Yuki 用的 SearXNG：只給本機的 bot 呼叫（JSON API），不對外開放
+use_default_settings: true
+general:
+  instance_name: "yuki-search"
+server:
+  secret_key: "請換成隨機字串"   # python -c "import secrets;print(secrets.token_hex(32))"
+  limiter: false        # 只有自己用，不需要防機器人限流
+  image_proxy: false
+search:
+  safe_search: 0
+  default_lang: "zh-TW"
+  formats:
+    - html
+    - json              # Yuki 用 /search?format=json

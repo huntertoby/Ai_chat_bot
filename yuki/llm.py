@@ -1,0 +1,221 @@
+"""LM Studio 的 async client。全部用 httpx.AsyncClient，不會卡住 Discord 的 event loop。"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+from typing import Any, Awaitable, Callable
+
+import httpx
+
+log = logging.getLogger(__name__)
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def strip_think(text: str) -> str:
+    text = _THINK_RE.sub("", text or "")
+    # 只有結尾標籤（開頭被 chat template 吃掉）時，取最後一個 </think> 之後的內容
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    return text.replace("<think>", "").strip()
+
+
+_TEXT_CALL = re.compile(r"<tool_call>.*?(?:</tool_call>|$)", re.DOTALL)
+_FUNC = re.compile(r"<function=([\w.-]+)>(.*?)(?:</function>|$)", re.DOTALL)
+_PARAM = re.compile(r"<parameter=([\w.-]+)>\s*(.*?)\s*(?:</parameter>|(?=<parameter=)|$)", re.DOTALL)
+
+
+def text_tool_calls(text: str) -> list[dict]:
+    """模型有時把工具呼叫用文字寫出來（Qwen 的 XML 格式），伺服器沒解析成 tool_calls。
+    解析成跟 API 一樣的格式；參數值能當 JSON 就當 JSON（陣列、數字）。"""
+    calls = []
+    for block in _TEXT_CALL.findall(text or ""):
+        for name, body in _FUNC.findall(block):
+            args = {}
+            for k, v in _PARAM.findall(body):
+                try:
+                    args[k] = json.loads(v)
+                except json.JSONDecodeError:
+                    args[k] = v
+            calls.append({"id": f"text-{len(calls)}", "type": "function",
+                          "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False)}})
+    return calls
+
+
+def strip_text_calls(text: str) -> str:
+    return _TEXT_CALL.sub("", text or "").strip()
+
+
+def extract_json(text: str) -> dict | None:
+    """從模型輸出中取出最後一個 JSON 物件；失敗回傳 None（永遠不會丟例外）。"""
+    text = strip_think(text)
+    text = re.sub(r"```(?:json)?", "", text)
+    decoder = json.JSONDecoder()
+    found: dict | None = None
+    i = 0
+    while i < len(text):
+        if text[i] == "{":
+            try:
+                obj, end = decoder.raw_decode(text, i)
+            except ValueError:
+                i += 1
+                continue
+            if isinstance(obj, dict):
+                found = obj
+            i = end
+        else:
+            i += 1
+    return found
+
+
+class LLMError(RuntimeError):
+    pass
+
+
+class LMStudioClient:
+    def __init__(self, base_url: str, model: str = "", *, temperature: float = 0.7,
+                 max_tokens: int = 2048, timeout: float = 180, reasoning_effort: str = "",
+                 json_reasoning_effort: str = "", max_concurrency: int = 1,
+                 extra_body: dict[str, Any] | None = None, slots: asyncio.Semaphore | None = None):
+        """slots：跟另一個 client 共用排隊（例如人物檔案更新跟聊天共用），避免同時送兩個請求給 LM Studio。"""
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.reasoning_effort = reasoning_effort
+        self.json_reasoning_effort = json_reasoning_effort
+        self.extra_body = extra_body or {}  # 每次請求都附加的欄位（例如 vLLM 的 chat_template_kwargs）
+        self._slots = slots or asyncio.Semaphore(max(1, max_concurrency))
+        self._http = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10))
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
+
+    async def resolve_model(self) -> str:
+        if self.model:
+            return self.model
+        resp = await self._http.get(f"{self.base_url}/models")
+        resp.raise_for_status()
+        ids = [m["id"] for m in resp.json().get("data", [])]
+        chat_ids = [i for i in ids if "embed" not in i.lower() and "rerank" not in i.lower()]
+        if not chat_ids:
+            raise LLMError(f"LM Studio 沒有可用的聊天模型（看到的模型：{ids}）")
+        self.model = chat_ids[0]
+        log.info("自動選用 LM Studio 模型：%s", self.model)
+        return self.model
+
+    async def _request(self, payload: dict[str, Any], reasoning_effort: str) -> dict[str, Any]:
+        """送出 chat/completions，回傳 choices[0].message（含 content、tool_calls）。"""
+        payload = {"model": await self.resolve_model(), "stream": False, **self.extra_body, **payload}
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
+        if reasoning_effort == "none":
+            # vLLM 不看 reasoning_effort，Qwen3 要用 chat template 參數關掉思考；LM Studio 會忽略這個欄位
+            kwargs = dict(payload.get("chat_template_kwargs") or {})
+            kwargs.setdefault("enable_thinking", False)
+            payload["chat_template_kwargs"] = kwargs
+        last_err: Exception | None = None
+        for attempt in range(2):
+            try:
+                async with self._slots:
+                    resp = await self._http.post(f"{self.base_url}/chat/completions", json=payload)
+                resp.raise_for_status()
+                choice = resp.json()["choices"][0]
+                message = choice.get("message") or {}
+                if not message.get("content") and not message.get("tool_calls") \
+                        and choice.get("finish_reason") == "length":
+                    log.warning("模型把 token 用完在推理上，沒有產生回答；可調低 LLM_REASONING_EFFORT")
+                return message
+            except httpx.TimeoutException as e:
+                # 逾時代表模型還在跑，重試只會讓使用者再等一輪
+                raise LLMError(f"LM Studio 逾時：{e!r}") from e
+            except (httpx.TransportError, httpx.HTTPStatusError) as e:
+                last_err = e
+                detail = e.response.text[:300] if isinstance(e, httpx.HTTPStatusError) else ""
+                log.warning("LM Studio 呼叫失敗（第 %d 次）：%r %s", attempt + 1, e, detail)
+        raise LLMError(f"LM Studio 連線失敗：{last_err!r}")
+
+    async def _complete(self, payload: dict[str, Any], reasoning_effort: str) -> str:
+        return (await self._request(payload, reasoning_effort)).get("content") or ""
+
+    async def chat_tools(self, messages: list[dict], tools: list[dict],
+                         call_tool: Callable[[str, dict], Awaitable[str]], *, max_rounds: int = 3,
+                         max_calls: int = 3) -> str:
+        """可以用工具的聊天：模型要求呼叫工具 → 執行 → 把結果給它 → 再問一次，最多 max_rounds 輪。
+        最後一輪不給工具，逼它用手上的資料回答。"""
+        msgs = list(messages)
+        for rnd in range(max_rounds + 1):
+            payload: dict[str, Any] = {"messages": msgs, "temperature": self.temperature,
+                                       "max_tokens": self.max_tokens}
+            if rnd < max_rounds:
+                payload["tools"] = tools
+            message = await self._request(payload, self.reasoning_effort)
+            calls = (message.get("tool_calls") or [])[:max_calls]
+            content = strip_think(message.get("content") or "")
+            if not calls and "<tool_call>" in content:
+                if rnd < max_rounds:
+                    calls = text_tool_calls(content)[:max_calls]  # 文字寫的工具呼叫：照樣執行
+                    message = {**message, "content": strip_text_calls(content)}
+                else:
+                    # 工具次數用完了還想查：叫它用手上的資料回答，不然回覆會是一串 <tool_call>
+                    log.info("工具次數用完但模型還想查，要求直接回答")
+                    nudge = msgs + [{"role": "user", "content": "（系統：不能再查了，根據上面已經查到的資料直接回答；"
+                                                              "資料不夠就說不確定。）"}]
+                    retry = await self._request({**payload, "messages": nudge}, "none")
+                    return strip_text_calls(strip_think(retry.get("content") or ""))
+            if not calls:
+                text = strip_text_calls(content)
+                if not text and self.reasoning_effort not in ("", "none"):
+                    # 推理模型有時把答案寫在思考裡就結束，正文是空的；不思考再問一次
+                    log.info("回覆是空的，改用 reasoning_effort=none 重試")
+                    no_tools = {k: v for k, v in payload.items() if k != "tools"}
+                    retry = await self._request(no_tools, "none")
+                    text = strip_think(retry.get("content") or "")
+                return text
+            msgs.append({"role": "assistant", "content": message.get("content") or "", "tool_calls": calls})
+            for call in calls:
+                fn = call.get("function") or {}
+                name = fn.get("name", "")
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                log.info("工具呼叫：%s %s", name, args)
+                result = await call_tool(name, args if isinstance(args, dict) else {})
+                msgs.append({"role": "tool", "tool_call_id": call.get("id", ""), "name": name,
+                             "content": result})
+        return ""
+
+    async def chat(self, messages: list[dict], *, temperature: float | None = None,
+                   max_tokens: int | None = None) -> str:
+        raw = await self._complete({
+            "messages": messages,
+            "temperature": self.temperature if temperature is None else temperature,
+            "max_tokens": max_tokens or self.max_tokens,
+        }, self.reasoning_effort)
+        return strip_think(raw)
+
+    async def chat_json(self, messages: list[dict], schema: dict, *, name: str = "result",
+                        temperature: float = 0.2, max_tokens: int | None = None,
+                        reasoning_effort: str | None = None) -> dict | None:
+        """要求結構化輸出。LM Studio 支援 json_schema（用 grammar 限制輸出），
+        但仍以 extract_json 兜底，解析失敗回傳 None。
+        reasoning_effort 可覆寫預設值：簡單又限制 token 的任務要用 "none"，
+        不然推理模型會把 max_tokens 花在思考上，答案還沒寫就被截斷。"""
+        payload = {
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens or self.max_tokens,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": name, "strict": True, "schema": schema},
+            },
+        }
+        effort = self.json_reasoning_effort if reasoning_effort is None else reasoning_effort
+        raw = await self._complete(payload, effort)
+        result = extract_json(raw)
+        if result is None:
+            log.warning("JSON 解析失敗，原始輸出前 200 字：%s", raw[:200])
+        return result

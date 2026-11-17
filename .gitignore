@@ -179,3 +179,15 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+# Yuki：記憶資料含群友個資，不要進版控
+data/
+legacy/
+chroma_memory/
+
+# 真實聊天內容出的評估題（開發規格 6.4）
+eval/archive_cases.jsonl
+
+# 公開 repo 不放：真實聊天的分析、log、含 secret_key 的 SearXNG 設定（用 settings.example.yml 複製一份）
+Luna對話分析.md
+logs/
+searxng/config/settings.yml

@@ -1,0 +1,1 @@
+{"guild_id": "你的伺服器ID", "author": {"id": "2", "name": "Toby"}, "members": [{"id": "<你的使用者ID>", "name": "Hunterchiao"}], "query": "Hunterchiao 生日是哪天", "expected": ["填入記憶ID"]}

@@ -1,0 +1,13 @@
+# 啟動：docker compose -f searxng/docker-compose.yml up -d
+# 只綁 127.0.0.1，區網其他電腦連不到
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: yuki-searxng
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./config:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://127.0.0.1:8888/
+    restart: unless-stopped
