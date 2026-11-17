@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,8 @@ CREATE TABLE IF NOT EXISTS optout (
 );
 -- 全文檢索（開發規格 6.4）：rowid = 訊息 ID，tok = jieba 斷詞後用空白隔開的內容
 CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5(tok, tokenize='unicode61');
+-- 備案：中文每兩個字一組（「那麼晚送」→「那麼 麼晚 晚送」）、英數整個字。jieba 切法跟查詢對不上時用
+CREATE VIRTUAL TABLE IF NOT EXISTS msg_bi USING fts5(bi, tokenize='unicode61');
 """
 
 
@@ -54,6 +57,22 @@ def fts_text(content: str) -> str:
     （「麥當勞」→「吃麥」「當勞」；轉簡體後是「麦当劳」）。索引和查詢都走這裡，所以一致。"""
     from .memory.text_index import tokenize
     return " ".join(tokenize(to_simplified(content)))
+
+
+_CJK_RUN = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]+|[a-z0-9]+")
+
+
+def bigram_text(content: str) -> str:
+    """中文連續字切成兩兩一組；英數字保留整個字；單一個中文字保留單字。"""
+    out = []
+    for run in _CJK_RUN.findall(to_simplified(content).lower()):
+        if run[0].isascii():
+            out.append(run)
+        elif len(run) == 1:
+            out.append(run)
+        else:
+            out += [run[i:i + 2] for i in range(len(run) - 1)]
+    return " ".join(out)
 
 
 @dataclass
@@ -88,9 +107,14 @@ class ArchiveDB:
 
     def index(self, rows: list[tuple[int, str]]) -> None:
         """把訊息加進全文檢索（同一則重複加會覆蓋）。"""
-        rows = [(i, fts_text(c)) for i, c in rows if c and c.strip()]
-        self.db.executemany("DELETE FROM msg_fts WHERE rowid=?", [(i,) for i, _ in rows])
-        self.db.executemany("INSERT INTO msg_fts(rowid, tok) VALUES (?, ?)", [r for r in rows if r[1]])
+        rows = [(i, c) for i, c in rows if c and c.strip()]
+        ids = [(i,) for i, _ in rows]
+        self.db.executemany("DELETE FROM msg_fts WHERE rowid=?", ids)
+        self.db.executemany("DELETE FROM msg_bi WHERE rowid=?", ids)
+        tok = [(i, fts_text(c)) for i, c in rows]
+        self.db.executemany("INSERT INTO msg_fts(rowid, tok) VALUES (?, ?)", [r for r in tok if r[1]])
+        bi = [(i, bigram_text(c)) for i, c in rows]
+        self.db.executemany("INSERT INTO msg_bi(rowid, bi) VALUES (?, ?)", [r for r in bi if r[1]])
 
     def last_id(self, channel_id: str) -> int | None:
         row = self.db.execute("SELECT last_id FROM fetch_progress WHERE channel_id=?", (channel_id,)).fetchone()
@@ -122,8 +146,9 @@ class ArchiveDB:
     def opt_out(self, guild_id: str, user_id: str) -> int:
         """退出封存：刪掉這個人所有訊息，之後也不再收。回傳刪除筆數。"""
         self.db.execute("INSERT OR IGNORE INTO optout VALUES (?, ?)", (guild_id, user_id))
-        self.db.execute("DELETE FROM msg_fts WHERE rowid IN (SELECT id FROM messages WHERE guild_id=? AND author_id=?)",
-                        (guild_id, user_id))
+        for table in ("msg_fts", "msg_bi"):
+            self.db.execute(f"DELETE FROM {table} WHERE rowid IN (SELECT id FROM messages WHERE guild_id=? AND author_id=?)",
+                            (guild_id, user_id))
         n = self.db.execute("DELETE FROM messages WHERE guild_id=? AND author_id=?", (guild_id, user_id)).rowcount
         self.db.commit()
         return n

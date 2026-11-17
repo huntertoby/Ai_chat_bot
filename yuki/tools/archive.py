@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
 
-from ..archive import fts_text
+from ..archive import bigram_text, fts_text
 
 TOOL_SPECS = [
     {"type": "function", "function": {
@@ -39,6 +39,16 @@ TOOL_SPECS = [
 ]
 
 NAMES = {t["function"]["name"] for t in TOOL_SPECS}
+
+
+def bigram_query(keywords: list[str]) -> str:
+    """備案查詢：每個關鍵字切成二字組，全部都要出現（AND），不同關鍵字 OR。"""
+    groups = []
+    for kw in keywords:
+        grams = bigram_text(str(kw)).split()
+        if grams:
+            groups.append("(" + " AND ".join('"' + g.replace('"', "") + '"' for g in grams) + ")")
+    return " OR ".join(groups)
 
 
 def fts_query(keywords: list[str]) -> str:
@@ -122,12 +132,23 @@ class ArchiveTools:
                 rest.append(kw)
         if rest:
             keywords = rest
-        q = fts_query(keywords)
+        hits = self._query("msg_fts", fts_query(keywords), boost, person, since, until)
+        if len(hits) < self.limit // 2:
+            # 斷詞對不上（「那麼晚送」vs「晚」、繁簡、黏在一起的詞）：用二字組再找一次補上
+            seen = {h.id for h in hits}
+            hits += [h for h in self._query("msg_bi", bigram_query(keywords), boost, person, since, until)
+                     if h.id not in seen]
+        hits.sort(key=lambda h: h.score, reverse=True)
+        out = hits[: self.limit]
+        self.seen += [h.id for h in out]
+        return out
+
+    def _query(self, table: str, q: str, boost: set[str], person: str, since: str, until: str) -> list[Hit]:
         if not q:
             return []
         sql = ("SELECT m.id, m.created_at, CASE WHEN m.parent_name != '' THEN m.parent_name ELSE m.channel_name END,"
-               " m.author_id, m.author_name, m.content, bm25(msg_fts) FROM msg_fts JOIN messages m ON m.id = msg_fts.rowid"
-               " WHERE msg_fts MATCH ? AND m.guild_id = ?")
+               f" m.author_id, m.author_name, m.content, bm25({table}) FROM {table} JOIN messages m ON m.id = {table}.rowid"
+               f" WHERE {table} MATCH ? AND m.guild_id = ?")
         params: list = [q, self.guild_id]
         if person:
             ids = self.resolve_person(person)
@@ -140,14 +161,19 @@ class ArchiveTools:
         if until:
             sql += " AND m.created_at <= ?"
             params.append(until + " 23:59:59" if len(until) == 10 else until)
-        sql += " ORDER BY bm25(msg_fts) LIMIT 200"
+        sql += f" ORDER BY bm25({table}) LIMIT 200"
         now = self.now or datetime.now()
-        hits = [Hit(i, ts, ch, au, c, rank(b, c, ts, now) * (1.6 if aid in boost else 1.0))
+        return [Hit(i, ts, ch, au, c, rank(b, c, ts, now) * (1.6 if aid in boost else 1.0))
                 for i, ts, ch, aid, au, c, b in self.db.execute(sql, params) if aid not in self.skip]
-        hits.sort(key=lambda h: h.score, reverse=True)
-        out = hits[: self.limit]
-        self.seen += [h.id for h in out]
-        return out
+
+    def followups(self, hit: Hit, n: int = 2) -> list[Hit]:
+        """命中那則之後的 n 則（同頻道）：答案常在下一則（「要用什麼 VPN？」→ 下一則「用 cloudflare」）。"""
+        rows = self.db.execute(
+            "SELECT id, created_at, author_id, author_name, content FROM messages"
+            " WHERE channel_id = (SELECT channel_id FROM messages WHERE id=?) AND id > ? ORDER BY id LIMIT ?",
+            (hit.id, hit.id, n + 2)).fetchall()
+        out = [Hit(i, ts, hit.channel, au, c, 0.0) for i, ts, aid, au, c in rows if aid not in self.skip and c.strip()]
+        return out[:n]
 
     def search_text(self, keywords, person="", since="", until="") -> str:
         hits = self.search(keywords, person, since, until)
@@ -162,7 +188,15 @@ class ArchiveTools:
         if not hits:
             return "（聊天紀錄裡找不到。可以換別的說法再試一次；真的沒有就說不知道。）"
         hits.sort(key=lambda h: h.id)  # 照時間排，比較好讀
-        return note + "\n".join(h.line() for h in hits)
+        lines, shown = [], {h.id for h in hits}
+        for h in hits:
+            lines.append(h.line())
+            for f in self.followups(h):  # 附上接著的兩則，縮排表示是後文
+                if f.id not in shown:
+                    shown.add(f.id)
+                    self.seen.append(f.id)
+                    lines.append("    ↳ " + f.line(100))
+        return note + "\n".join(lines)
 
     # ---------- read_chat ----------
     def context(self, message_id: int, before: int = 8, after: int = 8) -> list[Hit]:

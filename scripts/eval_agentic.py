@@ -70,13 +70,15 @@ async def run_case(llm, db, case: dict, guild: str, *, rounds: int) -> dict:
             "reply": reply, "seconds": round(time.time() - t, 2)}
 
 
-JUDGE = """你是評分員。判斷「回覆」有沒有正確講到「參考資料」的重點（人、事、大致內容對得上就算，不用一字不差）。
+JUDGE = """你是評分員。判斷「回覆」有沒有正確回答「問題」：回覆的重點要跟「參考資料」的答案對得上
+（人、事、大致內容對就算，不用一字不差；多講別的不扣分）。
+題目是自動產生的，裡面的「今天」「昨天」「剛才」之類的時間說法常常不準；回覆指出實際是哪天也算對，不要因為時間扣分。
 只回一個字：是 或 否。"""
 
 
-async def judge(llm, memory: str, reply: str) -> bool:
+async def judge(llm, question: str, memory: str, reply: str) -> bool:
     out = await llm.chat([{"role": "system", "content": JUDGE},
-                          {"role": "user", "content": f"參考資料：{memory}\n\n回覆：{reply}"}])
+                          {"role": "user", "content": f"問題：{question}\n\n參考資料：{memory}\n\n回覆：{reply}"}])
     return out.strip().startswith("是")
 
 
@@ -107,7 +109,7 @@ async def main() -> None:
     with out_path.open("w", encoding="utf-8") as f:
         for i, case in enumerate(cases, 1):
             g = guild or case["guild_id"]
-            if not g.isdigit():  # 題目檔裡的 <主伺服器ID> 之類的佔位：用 .env 的主伺服器
+            if args.real and not g.isdigit():  # 題目檔裡的 <主伺服器ID> 之類的佔位：用 .env 的主伺服器
                 g = s.profile_fallback_guild
             r = await run_case(llm, db, case, g, rounds=args.rounds)
             if args.real:
@@ -125,7 +127,7 @@ async def main() -> None:
             r["hit"] = bool(want & set(r["seen"]))
             r["searched"] = bool(r["calls"])
             if not args.no_judge and case.get("memory"):
-                r["correct"] = await judge(llm, case["memory"], r["reply"])
+                r["correct"] = await judge(llm, case["query"], case["memory"], r["reply"])
             results.append(r)
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             f.flush()

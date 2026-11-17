@@ -111,3 +111,20 @@ def test_text_tool_calls_are_parsed_and_final_round_is_nudged():
     out = asyncio.run(llm.chat_tools([{"role": "user", "content": "阿明搬去哪"}], [{}], call_tool, max_rounds=1))
     assert out == "他上個月搬到台中了"  # 不會把 <tool_call> 當回覆
     assert "不能再查了" in seen[-1]["messages"][-1]["content"]
+
+
+def test_bigram_fallback_finds_split_words():
+    from yuki.archive import bigram_text
+    assert bigram_text("那麼晚送 cheat") == "那么 么晚 晚送 cheat"
+    db = ArchiveDB(":memory:")
+    db.add_many([msg(1, "小傑", "他會那麼晚送是因為給每一個人都加了分數")])
+    t = tools(db)
+    assert [h.id for h in t.search(["晚送"])] == [1]  # jieba 切成「那麼晚」「送」之類，直接搜對不上
+
+
+def test_search_results_include_following_messages():
+    db = ArchiveDB(":memory:")
+    db.add_many([msg(1, "小傑", "如果要 VPN 的話"), msg(2, "小傑", "你們可以直接用 cloudflare 官方的"),
+                 msg(3, "阿明", "好喔"), msg(4, "阿明", "不相干的話")])
+    out = tools(db).search_text(["VPN"])
+    assert "#1" in out and "↳ #2" in out and "cloudflare" in out and "#4" not in out
