@@ -7,7 +7,9 @@ import re
 from collections import defaultdict, deque
 from datetime import date, datetime
 
-from . import prompts
+import httpx
+
+from . import prompts, trace, vision
 from .config import Settings
 from .embedding import Embedder, build_embedder
 from .llm import LMStudioClient
@@ -105,6 +107,7 @@ class Brain:
         self._pending_people: dict[str, dict[str, Person]] = defaultdict(dict)
         self._idle_timers: dict[str, asyncio.TimerHandle] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._img_http = httpx.AsyncClient(follow_redirects=False)
         self.archive_db = None  # bot 設定：封存區（agentic 檢索用）
 
     @property
@@ -141,6 +144,7 @@ class Brain:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         await self.llm.aclose()
+        await self._img_http.aclose()
         if self.web:
             await self.web.aclose()
 
@@ -165,6 +169,23 @@ class Brain:
             await self.writer.process(guild_id, [l for l, _ in chunk], created_at=chunk[-1][1])
         return len(chunks)
 
+    # ---------- 看圖片 ----------
+    async def collect_images(self, lines: list[ChatLine], *, spoken: bool = False) -> list:
+        """最近幾則裡的圖片（最新優先、有上限），下載縮圖；語音回覆不帶圖。失敗只是少圖。"""
+        s = self.settings
+        if spoken or not s.vision_enabled or s.vision_max_images <= 0:
+            return []
+        try:
+            items = await vision.collect(lines, n=s.vision_max_images, long_side=s.vision_reply_long_side,
+                                         recent=s.vision_recent_lines, client=self._img_http,
+                                         max_bytes=s.vision_max_mb * 1024 * 1024)
+        except Exception:
+            log.warning("取圖失敗，只用文字回覆", exc_info=True)
+            return []
+        if items and (tr := trace.current()):
+            tr.images = [{"msg_id": line.msg_id} for line, _ in items]
+        return items
+
     # ---------- 回覆 ----------
     async def reply(self, guild_id: str, channel_key: str, author: Person, text: str, *,
                     mentions: list[Person] = (), members: list[Person] = (), voice: str = "",
@@ -188,10 +209,12 @@ class Brain:
         whiteboard = [t for _, t, _ in self.store.whiteboard(guild_id)]
         profiles = self.pick_profiles(guild_id, channel_key, author, mentions, subs)
         log.info("人物檔案：%s", [n for n, _ in profiles])
+        lines = list(self.history[channel_key])
+        images = await self.collect_images(lines, spoken=spoken)
         system = prompts.reply_system(self.settings.bot_name, whiteboard, memories, today, profiles,
                                       web=self.web is not None, voice=voice, spoken=spoken,
-                                      owner=owner)
-        messages = [{"role": "system", "content": system}] + to_messages(list(self.history[channel_key]))
+                                      owner=owner, vision=bool(images))
+        messages = [{"role": "system", "content": system}] + vision.attach(to_messages(lines), images)
         if self.web:
             # 成員的名字不准拿去搜尋：會把朋友的學校、工作之類的個資送到外部搜尋引擎
             names = {p.name for p in [author, *mentions, *members]} - {self.settings.bot_name}
@@ -240,10 +263,12 @@ class Brain:
         today = date.today()
         whiteboard = [t for _, t, _ in self.store.whiteboard(guild_id)]
         profiles = self.pick_profiles(guild_id, channel_key, author, mentions, recent=False)
+        lines = list(self.history[channel_key])
+        images = await self.collect_images(lines, spoken=spoken)
         system = prompts.reply_system(s.bot_name, whiteboard, None, today, profiles, web=self.web is not None,
                                       voice=voice, spoken=spoken, owner=owner,
-                                      archive=self.archive_db is not None)
-        messages = [{"role": "system", "content": system}] + to_messages(list(self.history[channel_key]))
+                                      archive=self.archive_db is not None, vision=bool(images))
+        messages = [{"role": "system", "content": system}] + vision.attach(to_messages(lines), images)
 
         everyone = [author, *mentions, *members]
         specs: list[dict] = []

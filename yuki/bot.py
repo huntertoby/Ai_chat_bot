@@ -14,7 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from . import alert, trace
+from . import alert, trace, vision
 from .archive import ArchiveDB
 from .archive_sync import ArchiveSync, is_public
 from .brain import Brain
@@ -402,8 +402,11 @@ class YukiBot(commands.Bot):
             await message.reply("好的，我先去旁邊休息囉！有事再叫我～", mention_author=False)
             return
 
+        images = vision.image_urls(message) if self.settings.vision_enabled else []
+        if images and not text:
+            text = "（貼了圖片）"  # 只有圖片沒有文字：讓這則進對話紀錄，圖才帶得到
         if text:
-            line = ChatLine(author, text)
+            line = ChatLine(author, text, images=images, msg_id=str(message.id))
             self.brain.observe(channel_key, line)
             if called or active or (self.settings.passive_enabled and not test):
                 self.brain.buffer(gid, channel_key, line, mentions)

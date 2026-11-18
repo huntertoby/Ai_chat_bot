@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .. import prompts
 from ..embedding import Embedder
@@ -23,6 +23,8 @@ class ChatLine:
     author: Person
     text: str
     is_bot: bool = False
+    images: list[str] = field(default_factory=list)  # 圖片網址（Discord CDN），不是圖片內容
+    msg_id: str = ""
 
     def render(self) -> str:
         return f"[{self.author.name}] {self.text}"

@@ -183,6 +183,14 @@ class Settings:
     alert_max_per_hour: int = field(default_factory=lambda: _int("ALERT_MAX_PER_HOUR", 10))
     alert_health_sec: int = field(default_factory=lambda: _int("ALERT_HEALTH_SEC", 60))
 
+    # ---- 看圖片（開發規格 6.9）----
+    vision_enabled: bool = field(default_factory=lambda: _bool("VISION_ENABLED", True))
+    vision_reply_long_side: int = field(default_factory=lambda: _int("VISION_REPLY_LONG_SIDE", 1280))
+    vision_glance_long_side: int = field(default_factory=lambda: _int("VISION_GLANCE_LONG_SIDE", 512))
+    vision_max_images: int = field(default_factory=lambda: _int("VISION_MAX_IMAGES", 5))
+    vision_recent_lines: int = field(default_factory=lambda: _int("VISION_RECENT_LINES", 10))
+    vision_max_mb: int = field(default_factory=lambda: _int("VISION_MAX_MB", 10))
+
     db_path: Path = field(default_factory=lambda: ROOT / _str("DB_PATH", "data/yuki.db"))
     log_level: str = field(default_factory=lambda: _str("LOG_LEVEL", "INFO"))
 

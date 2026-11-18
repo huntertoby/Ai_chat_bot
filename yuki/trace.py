@@ -21,6 +21,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from . import vision
+
 log = logging.getLogger(__name__)
 
 KINDS = ("reply", "voice", "chime", "profile")  # chime 留給 B2（插話判斷），目前沒有接點
@@ -90,6 +92,7 @@ class Trace:
         self.degraded: list[str] = []
         self.latency_ms: dict[str, int] = {}
         self.attempts: list[dict] = []
+        self.images: list[dict] = []  # 附了哪些圖：只記來源訊息 ID，不記內容
         self.final: str | None = None
         self.error: str | None = None
         self._t0 = time.monotonic()
@@ -98,7 +101,7 @@ class Trace:
 
     # ---- 記錄 ----
     def add_attempt(self, messages: list, response: Any, ms: float, error: str | None = None) -> None:
-        self.attempts.append({"messages": list(messages), "response": response, "ms": round(ms),
+        self.attempts.append({"messages": vision.redact(messages), "response": response, "ms": round(ms),
                               "tools": [], **({"error": error} if error else {})})
 
     def add_tool(self, name: str, args: Any, result: str) -> None:
@@ -118,10 +121,14 @@ class Trace:
         lat = dict(self.latency_ms)
         lat.setdefault("llm", sum(a["ms"] for a in self.attempts))
         lat["total"] = round((time.monotonic() - self._t0) * 1000)
-        return {"trace_id": self.trace_id, "ts": self._ts.isoformat(timespec="seconds"), "kind": self.kind,
+        rec = {"trace_id": self.trace_id, "ts": self._ts.isoformat(timespec="seconds"), "kind": self.kind,
                 "guild": self.guild, "channel": self.channel, "trigger": self.trigger,
                 "outcome": self.outcome, "degraded": self.degraded, "latency_ms": lat,
                 "attempts": self.attempts, "final": self.final, "error": self.error}
+        if self.images:  # 有附圖才多這兩欄：張數和來源訊息 ID（不記圖片內容）
+            rec["images"] = len(self.images)
+            rec["image_sources"] = self.images
+        return rec
 
     async def __aenter__(self) -> "Trace":
         self._token = _current.set(self)

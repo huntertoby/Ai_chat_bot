@@ -72,6 +72,8 @@ def age(day: str, today) -> str:
     return f"約 {round(days / 365)} 年前"
 
 
+VISION_RULES = "最後一則訊息附了圖片，圖上的文字和內容也是對話的一部分，回答時要看圖；看不清楚就直說。"
+
 WEB_RULES = """上網：
 - 你可以用 web_search 上網搜尋，用 open_url 打開網址；YouTube 影片用 open_url 會讀到標題和字幕，等於看過。
 - 要查就直接用 function calling 呼叫工具，不要在回覆裡寫「我去查一下」或寫出工具名稱；還沒拿到工具結果前，不准回答需要查證的事實。
@@ -116,7 +118,7 @@ ARCHIVE_RULES = """查群組的事：
 
 def reply_system(bot_name: str, whiteboard: list[str], memories: list, today=None,
                  profiles: list[tuple[str, str]] = (), *, web: bool = False, voice: str = "",
-                 spoken: bool = False, owner: str = "", archive: bool = False) -> str:
+                 spoken: bool = False, owner: str = "", archive: bool = False, vision: bool = False) -> str:
     """profiles：[(名字, 檔案內容)]。web：能不能上網（有給工具才說可以，不然她會假裝查過）。
     spoken：在語音頻道裡講話（回覆會被念出來）。"""
     parts = [PERSONA.format(bot_name=bot_name)]
@@ -128,6 +130,8 @@ def reply_system(bot_name: str, whiteboard: list[str], memories: list, today=Non
         parts.append(ARCHIVE_RULES)
     if spoken:
         parts.append(SPOKEN_RULES)
+    if vision:
+        parts.append(VISION_RULES)
     if today is not None:
         # 沒有今天的日期，模型無法判斷記憶裡的事是「昨天」還是「三年前」
         parts.append(f"今天是 {today.isoformat()}（星期{_WEEKDAYS[today.weekday()]}）。")
