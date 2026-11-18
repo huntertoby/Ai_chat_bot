@@ -1,5 +1,5 @@
 # Create the Startup-folder shortcut for the current user (re-runnable). ASCII only; touches nothing else.
-$name = [regex]::Unescape('Yuki 自動啟動.lnk')   # Chinese name, kept ASCII-escaped for PS 5.1
+$name = [regex]::Unescape('Yuki \u81EA\u52D5\u555F\u52D5.lnk')   # Chinese name, kept ASCII-escaped for PS 5.1
 $startup = [Environment]::GetFolderPath('Startup')
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $lnk = Join-Path $startup $name
