@@ -15,7 +15,7 @@
 - 只結束自己啟動的 Yuki／BreezyVoice 程序（Yuki 可能是使用者自己開的）。
 
 ## 現況（最後更新：2026-11-18）
-- 進行中：A1 第二版已 push。使用者裝過捷徑後要求先關掉：已 stop，並用 uninstall.ps1 移除捷徑（2026-11-18）。要恢復時跑 scripts/autostart/install.ps1，再重開機登入、測試伺服器 /來語音 驗收（LM Studio 實際載入模型也在那時才驗到）。
+- 進行中：A1 第二版已 push。使用者裝過捷徑後要求先關掉：已 stop，並用 uninstall.ps1 移除捷徑（2026-11-18）。要恢復時跑 powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bot\scripts\autostart\install.ps1（要用完整路徑，使用者回報相對路徑會錯），再重開機登入、測試伺服器 /來語音 驗收（LM Studio 實際載入模型也在那時才驗到）。
 - 最近完成：A1 腳本兩版（scripts/autostart/：四個看顧＋start/stop/install）。
 - 已知：顯卡被別的工具的 gemma（16GB）佔著時，Yuki 的模型載不進去。Docker Desktop 開時會跳視窗。Docker＋SearXNG 目前開著（實作測試時開的）。
 

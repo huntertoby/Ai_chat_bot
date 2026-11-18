@@ -118,10 +118,10 @@ eval/                      評估題目（合成資料）
 這些不會改 LM Studio、Docker 的任何設定。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\autostart\install.ps1     # 在啟動資料夾建立捷徑
-powershell -ExecutionPolicy Bypass -File scripts\autostart\uninstall.ps1   # 移除捷徑
-powershell -ExecutionPolicy Bypass -File scripts\autostart\start.ps1       # 手動啟動（不跳視窗；已在跑的不會重複開）
-powershell -ExecutionPolicy Bypass -File scripts\autostart\stop.ps1        # 手動停止（只結束四個看顧程式和 Yuki、BreezyVoice）
+powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bot\scripts\autostart\install.ps1     # 在啟動資料夾建立捷徑
+powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bot\scripts\autostart\uninstall.ps1   # 移除捷徑
+powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bot\scripts\autostart\start.ps1       # 手動啟動（不跳視窗；已在跑的不會重複開）
+powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bot\scripts\autostart\stop.ps1        # 手動停止（只結束四個看顧程式和 Yuki、BreezyVoice）
 ```
 
 - `stop.ps1` **不會**關 LM Studio（Server、模型）、Docker 和 SearXNG 容器，因為別的工具也在用。要關自己跑 `lms server stop`、`docker compose -f searxng/docker-compose.yml down`。
