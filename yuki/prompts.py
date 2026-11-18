@@ -1,6 +1,7 @@
 """所有 prompt 與 JSON schema 集中在這裡，方便調整。"""
 from __future__ import annotations
 
+import os
 from datetime import date
 
 # ================= 回覆（純文字，不含 JSON） =================
@@ -151,7 +152,7 @@ def reply_system(bot_name: str, whiteboard: list[str], memories: list, today=Non
         parts.append(WEB_RULES)
     if archive:
         parts.append(ARCHIVE_RULES)
-    if web or archive:
+    if (web or archive) and not os.environ.get("YUKI_EVAL_NO_BACKGROUND_RULES"):  # 只給評估拿掉 B4 規則用，預設不設
         parts.append(BACKGROUND_RULES)
         if line := background_line(background):
             parts.append(line)
@@ -188,7 +189,7 @@ CHIME_SYSTEM = """[你是誰]
 你要比群組裡其他人更安靜：沒有把握有幫助或有趣，就不要講。你對別人在說「他」「那個機器人」「AI」時指的是不是你，要看前後文判斷。
 
 你要判斷的是最後一則（[最新訊息]）。輸出一個 JSON：
-- reason：一句話，為什麼這樣決定（15 字以內，越短越好）。
+- reason：為什麼這樣決定，10 字以內。
 - kind：這則屬於哪一類 —— congrats（個人里程碑、好消息）、comfort（個人壞消息、心情差）、answer（問全頻道的開放問題）、addon（對話有料可補）、about_me（在講你、叫你、接你剛講的話）、other。
 - action：reply（開口講一句）、react（只按一個表情反應）、none（不動）。
 - participate：0 到 1，你有多想開口。不確定就給低分。
@@ -199,7 +200,7 @@ CHIME_SYSTEM = """[你是誰]
 - 個人里程碑或好消息：連勝、考上、上分、生日、找到工作、完成了什麼。圖片上才看得出來的也算，圖上的文字和內容是訊息的一部分。
 - 個人壞消息或心情差：打輸很氣、生病、被當、被放鴿子。陪一下、關心一下。
 - 問全頻道的開放問題，而且你答得出來或查得到。
-- 對方在跟你說話或講到你：叫你、問你、嘴你、接你剛講的話（包括很短的接話），或者在回你說的話（[… 回覆你「…」]）。
+- 對方在跟你說話：叫你、問你、邀你表示意見、挑戰你、嘴你、接你剛講的話（包括很短的接話），或者在回你說的話（[… 回覆你「…」]）。
 - 你真的有料可補，例如群組以前聊過、你可能查得到的事，而且補了會讓對話更好。
 
 不要開口（none，或單純表情 react）的情況：
@@ -208,6 +209,7 @@ CHIME_SYSTEM = """[你是誰]
 - 沒內容的反應、單一表情、附和、打招呼、睡覺吃飯之類的日常報備。
 - 你講不出什麼的話題，或你不懂的專業話題。
 - 對方明顯不想要你參與。
+- 別人在講你，但不是問你、不是邀你回應、也不是在嘴你（陳述你的事、報告你的進度、在別人面前評價你）：那是別人之間的對話，不算在跟你講話，你不用接。被問、被挑戰、被邀意見才算。
 值得理一下、但不值得講話時，用 react 按個表情就好，不要硬開口。
 
 對話紀錄的格式：[名字] 內容；有回覆關係時是 [名字 回覆 某人「被回覆的那句」] 內容，「回覆你」就是在回你說過的話；你自己說過的話標成 [{bot_name}（你）]。"""
@@ -217,7 +219,7 @@ CHIME_ATTENTION = "（提示：你剛剛才講過話，這則比較可能是在�
 CHIME_SCHEMA = {
     "type": "object",
     "properties": {
-        "reason": {"type": "string"},
+        "reason": {"type": "string", "maxLength": 20},
         "kind": {"type": "string", "enum": ["congrats", "comfort", "answer", "addon", "about_me", "other"]},
         "action": {"type": "string", "enum": ["reply", "react", "none"]},
         "participate": {"type": "number"},

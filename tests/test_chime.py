@@ -557,3 +557,17 @@ def test_chime_only_in_test_guilds_by_default():
     assert not YukiBot.chime_allowed(fake, None)
     fake.settings.chime_guild_ids = ["222"]
     assert YukiBot.chime_allowed(fake, g_main) and not YukiBot.chime_allowed(fake, g_test)
+
+
+def test_chime_system_has_about_her_but_not_to_her_rule_and_short_reason():
+    from yuki import prompts
+    assert "不算在跟你講話" in prompts.CHIME_SYSTEM
+    assert prompts.CHIME_SCHEMA["properties"]["reason"]["maxLength"] <= 30
+
+
+def test_background_rules_default_on_and_env_switch(monkeypatch):
+    from yuki import prompts
+    monkeypatch.delenv("YUKI_EVAL_NO_BACKGROUND_RULES", raising=False)
+    assert prompts.BACKGROUND_RULES in prompts.reply_system("Yuki", [], None, web=True)
+    monkeypatch.setenv("YUKI_EVAL_NO_BACKGROUND_RULES", "1")
+    assert prompts.BACKGROUND_RULES not in prompts.reply_system("Yuki", [], None, web=True)
