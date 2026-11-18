@@ -1,0 +1,7 @@
+{
+  "checks": [
+    {"name": "單元測試", "cmd": "..\\.venv\\Scripts\\python.exe -m pytest -q", "timeout": 900},
+    {"name": "個資掃描（公開 repo）", "cmd": "..\\.venv\\Scripts\\python.exe -m scripts.check_private", "timeout": 120}
+  ],
+  "protect": ["docs/決定紀錄.md"]
+}

@@ -191,3 +191,9 @@ eval/archive_cases.jsonl
 Luna對話分析.md
 logs/
 searxng/config/settings.yml
+
+# pm-workflow：push 檢查的 log、個資掃描的本機名單
+.claude/pm-logs/
+.claude/private-words.txt
+.claude/private-allow.txt
+.claude/settings.local.json
