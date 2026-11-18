@@ -27,6 +27,11 @@ def _bool(name: str, default: bool) -> bool:
     return _str(name, str(default)).lower() in ("1", "true", "yes", "on")
 
 
+def _opt_float(name: str) -> float | None:
+    v = _str(name)
+    return float(v) if v else None
+
+
 def _list(name: str, default: str) -> list[str]:
     return [s.strip() for s in _str(name, default).split(",") if s.strip()]
 
@@ -190,6 +195,33 @@ class Settings:
     vision_max_images: int = field(default_factory=lambda: _int("VISION_MAX_IMAGES", 5))
     vision_recent_lines: int = field(default_factory=lambda: _int("VISION_RECENT_LINES", 10))
     vision_max_mb: int = field(default_factory=lambda: _int("VISION_MAX_MB", 10))
+
+    # ---- 防洗版與節流（開發規格 6.2，yuki/throttle.py）----
+    throttle_cooldown_sec: float = field(default_factory=lambda: _float("THROTTLE_COOLDOWN_SEC", 5))
+    throttle_tag_limit: int = field(default_factory=lambda: _int("THROTTLE_TAG_LIMIT", 3))
+    throttle_tag_window_sec: float = field(default_factory=lambda: _float("THROTTLE_TAG_WINDOW_SEC", 60))
+    throttle_tag_cooldown_sec: float = field(default_factory=lambda: _float("THROTTLE_TAG_COOLDOWN_SEC", 120))
+    # 雜訊：去掉表情標點後 ≤ 這麼多字的訊息不判斷；大量重複：同字元連續幾次、同一人被 @ 幾次
+    noise_max_chars: int = field(default_factory=lambda: _int("NOISE_MAX_CHARS", 2))
+    flood_repeat_chars: int = field(default_factory=lambda: _int("FLOOD_REPEAT_CHARS", 10))
+    flood_repeat_mentions: int = field(default_factory=lambda: _int("FLOOD_REPEAT_MENTIONS", 3))
+
+    # ---- 插話判斷（開發規格 6.1，yuki/chime.py）----
+    # 0 = 只有被叫才回；1 = 門檻 0.7、同頻道每 10 分鐘最多 1 次；2 = 0.6、5 分鐘；3 = 0.5、2 分鐘
+    chime_in: int = field(default_factory=lambda: _int("CHIME_IN", 1))
+    # 哪些伺服器開插話判斷；留空＝只有 TEST_GUILD_IDS（主伺服器等階段 D 再開）
+    chime_guild_ids: list[str] = field(default_factory=lambda: _list("CHIME_GUILD_IDS", ""))
+    # 留空 = 依 CHIME_IN 的等級；填了就蓋過等級的門檻
+    chime_threshold: float | None = field(default_factory=lambda: _opt_float("CHIME_THRESHOLD"))
+    chime_debounce_sec: float = field(default_factory=lambda: _float("CHIME_DEBOUNCE_SEC", 4))
+    chime_context_lines: int = field(default_factory=lambda: _int("CHIME_CONTEXT_LINES", 15))
+    chime_max_images: int = field(default_factory=lambda: _int("CHIME_MAX_IMAGES", 3))
+    chime_max_tokens: int = field(default_factory=lambda: _int("CHIME_MAX_TOKENS", 160))
+    # 被叫「閉嘴」「沒問你」之後，這個頻道多久不主動插話
+    chime_mute_minutes: float = field(default_factory=lambda: _float("CHIME_MUTE_MINUTES", 30))
+    # 按表情：每個頻道每 N 分鐘最多幾個（跟插話次數分開算）
+    chime_react_max: int = field(default_factory=lambda: _int("CHIME_REACT_MAX", 3))
+    chime_react_window_min: float = field(default_factory=lambda: _float("CHIME_REACT_WINDOW_MIN", 10))
 
     db_path: Path = field(default_factory=lambda: ROOT / _str("DB_PATH", "data/yuki.db"))
     log_level: str = field(default_factory=lambda: _str("LOG_LEVEL", "INFO"))

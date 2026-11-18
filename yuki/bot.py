@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import sys
 import time
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -14,14 +16,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from . import alert, trace, vision
+from . import alert, chime, throttle, trace, vision
 from .archive import ArchiveDB
 from .archive_sync import ArchiveSync, is_public
 from .brain import Brain
 from .config import ROOT, Settings, load_settings
 from .llm import LLMError, LMStudioClient
 from .memory.text_index import add_words
-from .memory.writer import ChatLine
+from .memory.writer import ChatLine, ReplyRef
 from .profile.auto import ProfileUpdater
 from .profile.builder import ProfileBuilder
 from .profile.store import ProfileDB
@@ -63,6 +65,30 @@ def person(member: discord.abc.User) -> Person:
     return Person(str(member.id), getattr(member, "display_name", None) or member.name)
 
 
+@dataclass
+class Turn:
+    """一次要回覆的事：回覆哪則訊息、誰說的。被叫到排隊的、自己決定插話的都用這個。"""
+    message: discord.Message
+    author: Person
+    text: str
+    mentions: list[Person]
+    trigger: str = "called"          # called / chime / chime_attention
+    background: list[str] = field(default_factory=list)  # 插話判斷的 need_background（B4）
+    chimed: bool = False
+
+    @staticmethod
+    def merge(turns: list["Turn"]) -> "Turn | None":
+        """排隊期間被叫到的訊息合成一次回覆：回覆最後一則，@ 到的人聯集（對話紀錄裡本來就有全部的訊息）。"""
+        if not turns:
+            return None
+        last = turns[-1]
+        people: dict[str, Person] = {}
+        for t in turns:
+            for m in t.mentions:
+                people.setdefault(m.id, m)
+        return Turn(last.message, last.author, last.text, list(people.values()), trigger="called")
+
+
 class YukiBot(commands.Bot):
     def __init__(self, settings: Settings):
         intents = discord.Intents.default()
@@ -83,6 +109,16 @@ class YukiBot(commands.Bot):
         self._members: dict[int, list[Person]] = {}
         self._wake = re.compile("|".join(re.escape(w) for w in settings.wake_words), re.IGNORECASE)
         self._synced = False
+        # B3 節流、B2 插話判斷的硬限制
+        self.throttle = throttle.Throttle(throttle.ThrottleConfig(
+            cooldown_sec=settings.throttle_cooldown_sec, tag_limit=settings.throttle_tag_limit,
+            tag_window_sec=settings.throttle_tag_window_sec, tag_cooldown_sec=settings.throttle_tag_cooldown_sec))
+        self.limits = chime.ChimeLimits(settings.chime_in, threshold=settings.chime_threshold,
+                                        mute_sec=settings.chime_mute_minutes * 60,
+                                        react_max=settings.chime_react_max,
+                                        react_window_sec=settings.chime_react_window_min * 60)
+        self._debounce: dict[int, asyncio.Task] = {}
+        self._chime_tasks: set[asyncio.Task] = set()
         self.archive = ArchiveDB(ARCHIVE_PATH)
         self.sync = ArchiveSync(self.archive, settings.archive_role, set(settings.archive_exclude))
         trace.configure(settings.trace_dir, max_days=settings.trace_max_days, max_mb=settings.trace_max_mb,
@@ -138,6 +174,8 @@ class YukiBot(commands.Bot):
         log.exception("事件 %s 發生未捕捉的例外", event_method)
 
     async def close(self) -> None:
+        for task in list(self._chime_tasks):
+            task.cancel()
         if self._health_task:
             self._health_task.cancel()
         for gid in list(self.voice_sessions):
@@ -295,6 +333,13 @@ class YukiBot(commands.Bot):
         finally:
             self._catching_up -= 1
 
+    def chime_allowed(self, guild: discord.Guild | None) -> bool:
+        """哪些伺服器開插話判斷：CHIME_GUILD_IDS；留空＝只有測試伺服器（主伺服器等階段 D 再開）。"""
+        if guild is None:
+            return False
+        ids = self.settings.chime_guild_ids or self.settings.test_guild_ids
+        return str(guild.id) in ids
+
     def is_test_guild(self, guild: discord.Guild | None) -> bool:
         """測試伺服器：不封存、不在背景整理記憶（私人伺服器的頻道可能有密碼之類的東西）。"""
         return guild is not None and str(guild.id) in self.settings.test_guild_ids
@@ -382,8 +427,38 @@ class YukiBot(commands.Bot):
         ref = message.reference.resolved if message.reference else None
         return isinstance(ref, discord.Message) and ref.author == self.user
 
+    # ---------- 回覆關係 ----------
+    def reply_ref(self, message: discord.Message) -> tuple[ReplyRef | None, str]:
+        """這則訊息回覆的是誰：能直接從快取拿到就拿（不花 API），拿不到只留訊息 ID，之後補抓。"""
+        ref = message.reference
+        if ref is None or not ref.message_id:
+            return None, ""
+        resolved = ref.resolved
+        if isinstance(resolved, discord.Message):
+            return self._ref_of(resolved), ""
+        return None, str(ref.message_id)
+
+    def _ref_of(self, m: discord.Message) -> ReplyRef:
+        text = m.clean_content or (vision.IMAGE_PLACEHOLDER if m.attachments or m.embeds else "")
+        name = getattr(m.author, "display_name", None) or m.author.name
+        return chime.make_ref(name, m.author == self.user, text)
+
+    async def _fill_reply_refs(self, channel) -> None:
+        """對話紀錄裡還沒補到回覆對象的訊息：先從紀錄裡找，找不到才問 Discord（每次最多 3 則）。"""
+        async def fetch(message_id: str) -> ReplyRef | None:
+            return self._ref_of(await channel.fetch_message(int(message_id)))
+
+        lines = list(self.brain.history[str(channel.id)])
+        if any(l.reply_id for l in lines):
+            await chime.fill_replies(lines, fetch, limit=3)
+
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot:
+        s = self.settings
+        if message.author.bot or message.webhook_id:  # bot（包括 Luna）一律不理，C4 才做互動
+            return
+        if throttle.is_flood(message.content, repeat_chars=s.flood_repeat_chars,
+                             repeat_mentions=s.flood_repeat_mentions):
+            log.info("大量重複的訊息，不回、不進記憶")
             return
         self._last_activity = time.monotonic()
         test = self.is_test_guild(message.guild)
@@ -392,6 +467,10 @@ class YukiBot(commands.Bot):
                 self.sync.record(message)
             except Exception:
                 log.exception("訊息存進封存區失敗")
+        if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+            return  # 加入、置頂、加成之類的系統訊息
+        if throttle.is_command(message.content):
+            return
         text = self.clean(message)
         gid, cid = guild_key(message.guild, message.author), message.channel.id
         channel_key = str(cid)
@@ -401,52 +480,105 @@ class YukiBot(commands.Bot):
         active = self.active_until.get(cid, 0) > now
         called = self.is_called(message)
 
-        if active and any(w in message.content for w in self.settings.exit_words):
+        # 對她說「閉嘴」「沒問你」：這個頻道一陣子不主動插話（被叫仍回）
+        if (called or active) and chime.is_shush(message.content):
+            self.limits.mute(cid)
+            log.info("被叫閉嘴，頻道 %s 在 %.0f 分鐘內不主動插話", cid, s.chime_mute_minutes)
+
+        if active and any(w in message.content for w in s.exit_words):
             self.active_until.pop(cid, None)
             await message.reply("好的，我先去旁邊休息囉！有事再叫我～", mention_author=False)
             return
 
-        if self.settings.vision_enabled and (called or active):
+        if s.vision_enabled and called:
             await vision.wait_for_embeds(message)  # 連結預覽是 Discord 事後補上的（訊息編輯），等一下
-        images = vision.image_urls(message) if self.settings.vision_enabled else []
+        images = vision.image_urls(message) if s.vision_enabled else []
         if images and not text:
             text = "（貼了圖片）"  # 只有圖片沒有文字：讓這則進對話紀錄，圖才帶得到
+        line = None
         if text:
-            line = ChatLine(author, text, images=images, msg_id=str(message.id))
-            self.brain.observe(channel_key, line)
-            if called or active or (self.settings.passive_enabled and not test):
+            reply_to, reply_id = self.reply_ref(message)
+            line = ChatLine(author, text, images=images, msg_id=str(message.id), reply_to=reply_to,
+                            reply_id=reply_id)
+            if self.brain.observe(channel_key, line) and (called or (s.passive_enabled and not test)):
                 self.brain.buffer(gid, channel_key, line, mentions)
 
-        if not (called or active):
+        if called:
+            self._cancel_debounce(cid)  # 有人叫她，不用再判斷要不要插話
+            await self._on_called(message, author, text, mentions)
+            return
+        if message.guild is not None and not self.chime_allowed(message.guild):
+            # 還沒開插話的伺服器（預設＝測試伺服器以外，例如主伺服器）：維持舊行為，注意模式內照樣回
+            if active and line is not None and not throttle.is_noise_text(text, s.noise_max_chars):
+                await self._on_called(message, author, text, mentions, count_tag=False)
+            return
+        # 沒被叫到：先過雜訊過濾，再排進插話判斷（注意模式只是多一個提示，不是必回）
+        if (line is None or not self.limits.enabled or message.guild is None
+                or throttle.is_noise_text(text, s.noise_max_chars)):
+            return
+        self._schedule_chime(message, line, attention=active)
+
+    # ---------- 被叫到：節流、排隊、回覆 ----------
+    async def _on_called(self, message: discord.Message, author: Person, text: str, mentions: list[Person],
+                         *, count_tag: bool = True) -> None:
+        cid = message.channel.id
+        if count_tag and not self.throttle.note_tag(author.id):
+            dropped = self.throttle.drop_queued(cid, lambda t: t.author.id == author.id)
+            log.info("%s 一直叫她（洗版），不回（排隊中的 %d 則也丟掉）", author.name, dropped)
             return
         if not text:
             await message.reply("找我有事嗎？", mention_author=False)
             return
+        turn = Turn(message, author, text, mentions, trigger="called")
+        if not self.throttle.try_start(cid):
+            self.throttle.enqueue(cid, turn)  # 這個頻道正在回覆：等它回完，排隊的合成一次回
+            return
+        await self._run_turns(cid, turn)
 
-        self.active_until[cid] = now + self.settings.attention_timeout
+    async def _run_turns(self, cid: int, turn: Turn | None) -> None:
+        """呼叫端已經 try_start 成功。回完一則後，把排隊期間被叫的訊息合成一次回覆。"""
+        try:
+            while turn is not None:
+                await self._respond(turn)
+                turn = Turn.merge(self.throttle.drain(cid))
+        finally:
+            self.throttle.drain(cid)
+            self.throttle.finish(cid)
+
+    async def _respond(self, turn: Turn) -> bool:
+        message, author, mentions = turn.message, turn.author, turn.mentions
+        s = self.settings
+        gid, cid = guild_key(message.guild, message.author), message.channel.id
+        channel_key = str(cid)
+        if turn.trigger == "called":
+            self.active_until[cid] = time.monotonic() + s.attention_timeout
         self._replying += 1
         tr = trace.start("reply", guild=message.guild.id if message.guild else "", channel=cid,
-                         trigger="called" if called else "active",
-                         user_ids=[author.id, *(m.id for m in mentions)])
+                         trigger=turn.trigger, user_ids=[author.id, *(m.id for m in mentions)])
         try:
             async with tr:
                 async with message.channel.typing():
+                    await self._fill_reply_refs(message.channel)
                     voice = self.voice.describe(str(message.guild.id), datetime.now()) if message.guild else ""
-                    reply = await self.brain.reply(gid, channel_key, author, text, mentions=mentions,
+                    reply = await self.brain.reply(gid, channel_key, author, turn.text, mentions=mentions,
                                                    members=self.members_of(message.guild), voice=voice,
                                                    owner=self.owner_name(message.guild),
-                                                   archive_guild=self.archive_guild(message.guild))
+                                                   archive_guild=self.archive_guild(message.guild),
+                                                   background=turn.background, chimed=turn.chimed)
                 tr.final = reply
         except LLMError as e:
             # 用 warning：ERROR 會被 AlertLogHandler 當成另一種錯誤再通知一次
             log.warning("回覆失敗 trace_id=%s", tr.trace_id, exc_info=True)
-            self.alerter.notify("lmstudio", "LM Studio 連線", "回覆時連不上 LM Studio", exc=e,
-                                trace_id=tr.trace_id)
-            await message.reply("我跟 LM Studio 的連線好像斷了…等等再試一次？", mention_author=False)
-            return
+            if not turn.chimed:  # 自己決定插話的不用道歉，安靜地算了
+                self.alerter.notify("lmstudio", "LM Studio 連線", "回覆時連不上 LM Studio", exc=e,
+                                    trace_id=tr.trace_id)
+                await message.reply("我跟 LM Studio 的連線好像斷了…等等再試一次？", mention_author=False)
+            return False
         finally:
             self._replying -= 1
         if not reply:
+            if turn.chimed:
+                return False
             reply = "……我腦袋突然一片空白，再說一次？"
 
         for i, chunk in enumerate(split_message(reply)):
@@ -457,6 +589,115 @@ class YukiBot(commands.Bot):
         bot_line = ChatLine(person(self.user), reply, is_bot=True)
         self.brain.observe(channel_key, bot_line)
         self.brain.buffer(gid, channel_key, bot_line)
+        return True
+
+    # ---------- 沒被叫到：插話判斷（B2）----------
+    def _cancel_debounce(self, cid: int) -> None:
+        task = self._debounce.pop(cid, None)
+        if task is not None:
+            task.cancel()
+
+    def _schedule_chime(self, message: discord.Message, line: ChatLine, *, attention: bool) -> None:
+        """去抖動：同頻道最後一則後 CHIME_DEBOUNCE_SEC 秒沒人再講，才判斷最新那則。"""
+        cid = message.channel.id
+        self._cancel_debounce(cid)
+        task = self.loop.create_task(self._chime_later(message, line, attention))
+        self._debounce[cid] = task
+        self._chime_tasks.add(task)
+        task.add_done_callback(self._chime_tasks.discard)
+
+    async def _chime_later(self, message: discord.Message, line: ChatLine, attention: bool) -> None:
+        cid = message.channel.id
+        try:
+            await asyncio.sleep(self.settings.chime_debounce_sec)
+        except asyncio.CancelledError:
+            return  # 又有人講話了，由新的那則重新計時
+        if self._debounce.get(cid) is asyncio.current_task():
+            del self._debounce[cid]  # 開始判斷之後不再被取消
+        try:
+            turn = await self._chime(message, line, attention)
+            if turn is not None:
+                await self._run_turns(cid, turn)
+        except Exception:
+            log.exception("插話判斷失敗")
+
+    async def _chime(self, message: discord.Message, line: ChatLine, attention: bool) -> Turn | None:
+        """判斷一次。決定要回覆就回傳 Turn（已經佔住這個頻道，由呼叫端 _run_turns 接手）；
+        按表情在這裡做完；其餘回 None。每次都寫一筆 chime 追蹤紀錄（跳過的也寫，註明原因）。"""
+        s = self.settings
+        cid, uid = message.channel.id, str(message.author.id)
+        channel_key = str(cid)
+        info: dict = {"attention": attention}
+        turn: Turn | None = None
+        tr = trace.start("chime", guild=message.guild.id if message.guild else "", channel=cid,
+                         trigger="attention" if attention else "idle", user_ids=[uid])
+        async with tr:
+            def skip(reason: str) -> None:
+                tr.outcome = "skipped"
+                info["action"] = f"skipped:{reason}"
+
+            reason = (self.limits.gate(cid, attention=attention)
+                      or ("busy" if self.throttle.is_busy(cid) else None)
+                      or ("cooldown" if self.throttle.in_cooldown(cid) else None)
+                      or ("llm_busy" if self._replying > 0 or chime.llm_is_busy(self.brain.llm) else None))
+            if reason:
+                skip(reason)
+            else:
+                hist = list(self.brain.history[channel_key])
+                try:
+                    await self._fill_reply_refs(message.channel)
+                    new_images = vision.image_urls(message) if s.vision_enabled else []
+                    if new_images and not line.images:
+                        line.images = new_images  # 連結預覽的圖是事後補上的，去抖動這幾秒夠它出現
+                    images = (await vision.glance_images(hist[-s.vision_recent_lines:], s.chime_max_images,
+                                                         long_side=s.vision_glance_long_side,
+                                                         recent=s.vision_recent_lines,
+                                                         client=self.brain._img_http)
+                              if s.vision_enabled and s.chime_max_images > 0 else [])
+                except Exception:
+                    log.warning("插話判斷取圖失敗，只用文字", exc_info=True)
+                    images = []
+                idx = next((i for i, l in enumerate(hist) if l is line), len(hist))
+                d = await chime.decide(self.brain.llm, recent=hist[:idx], latest=line, bot_name=s.bot_name,
+                                       images=images, attention=attention, context_lines=s.chime_context_lines,
+                                       max_tokens=s.chime_max_tokens)
+                tr.lat("decide", d.ms)
+                info.update(decision=d.to_dict(), threshold=self.limits.threshold, images=len(images))
+                info["action"] = "none"
+                if d.error:
+                    tr.degrade("chime_failed")
+                elif d.should_reply(self.limits.threshold):
+                    if not self.limits.kind_ok(uid, d.kind, attention=attention):
+                        skip("kind_daily_limit")
+                    elif not self.throttle.try_start(cid):
+                        skip("busy")
+                    else:
+                        self.limits.record_reply(cid, uid, d.kind, attention=attention)
+                        info["action"] = "reply"
+                        mentions = [person(u) for u in message.mentions if u != self.user and not u.bot]
+                        turn = Turn(message, person(message.author), line.text, mentions,
+                                    trigger="chime_attention" if attention else "chime",
+                                    background=d.need_background, chimed=True)
+                elif d.should_react(0.0):
+                    # 按表情不看門檻（模型已經選了 react），但有自己的次數限制，也受同人同類一天一次限制
+                    gate = self.limits.react_gate(cid)
+                    emoji = chime.resolve_emoji(d.emoji, message.guild.emojis if message.guild else ())
+                    if gate:
+                        skip(gate)
+                    elif not self.limits.kind_ok(uid, d.kind, attention=attention):
+                        skip("kind_daily_limit")
+                    elif emoji is None:
+                        skip("emoji_not_found")
+                    else:
+                        try:
+                            await message.add_reaction(emoji)
+                            self.limits.record_react(cid, uid, d.kind)
+                            info["action"] = "react"
+                        except discord.HTTPException:
+                            log.info("按表情失敗：%s", d.emoji, exc_info=True)
+                            skip("react_failed")
+            tr.final = json.dumps(info, ensure_ascii=False)
+        return turn
 
 
 def register_commands(bot: YukiBot) -> None:

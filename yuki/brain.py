@@ -9,7 +9,7 @@ from datetime import date, datetime
 
 import httpx
 
-from . import prompts, trace, vision
+from . import prompts, throttle, trace, vision
 from .config import Settings
 from .embedding import Embedder, build_embedder
 from .llm import LMStudioClient
@@ -52,7 +52,7 @@ def to_messages(lines: list[ChatLine]) -> list[dict]:
     msgs: list[dict] = []
     for line in lines:
         role = "assistant" if line.is_bot else "user"
-        content = line.text if line.is_bot else line.render()
+        content = line.text if line.is_bot else line.render_chat()
         if msgs and msgs[-1]["role"] == role:
             msgs[-1]["content"] += "\n" + content
         else:
@@ -149,8 +149,13 @@ class Brain:
             await self.web.aclose()
 
     # ---------- 對話紀錄 ----------
-    def observe(self, channel_key: str, line: ChatLine) -> None:
-        self.history[channel_key].append(line)
+    def observe(self, channel_key: str, line: ChatLine) -> bool:
+        """加進頻道對話紀錄；連續重複的同一句（同人同內容）只留一則，回傳有沒有加進去。"""
+        h = self.history[channel_key]
+        if h and throttle.is_repeat(h[-1], line):
+            return False
+        h.append(line)
+        return True
 
     # ---------- 啟動補抓 ----------
     async def catch_up(self, guild_id: str, channel_key: str, lines: list[tuple[ChatLine, str]]) -> int:
@@ -189,12 +194,15 @@ class Brain:
     # ---------- 回覆 ----------
     async def reply(self, guild_id: str, channel_key: str, author: Person, text: str, *,
                     mentions: list[Person] = (), members: list[Person] = (), voice: str = "",
-                    spoken: bool = False, owner: str = "", archive_guild: str = "") -> str:
-        """archive_guild：agentic 檢索查哪個伺服器的封存區（測試伺服器借主伺服器的）。"""
+                    spoken: bool = False, owner: str = "", archive_guild: str = "",
+                    background: list[str] = (), chimed: bool = False) -> str:
+        """archive_guild：agentic 檢索查哪個伺服器的封存區（測試伺服器借主伺服器的）。
+        background：插話判斷給的 need_background（B4 第 2 層），回覆前先查；chimed：這次是她自己決定插話。"""
         if self.agentic:
             return await self._reply_agentic(guild_id, channel_key, author, text, mentions=mentions,
                                              members=members, voice=voice, spoken=spoken, owner=owner,
-                                             archive_guild=archive_guild or guild_id)
+                                             archive_guild=archive_guild or guild_id,
+                                             background=background, chimed=chimed)
         today = date.today()
         subs = await decompose(text, author, list(mentions), list(members),
                                wake_words=self.settings.wake_words,
@@ -213,7 +221,7 @@ class Brain:
         images = await self.collect_images(lines, spoken=spoken)
         system = prompts.reply_system(self.settings.bot_name, whiteboard, memories, today, profiles,
                                       web=self.web is not None, voice=voice, spoken=spoken,
-                                      owner=owner, vision=bool(images))
+                                      owner=owner, vision=bool(images), background=background, chimed=chimed)
         messages = [{"role": "system", "content": system}] + vision.attach(to_messages(lines), images)
         if self.web:
             # 成員的名字不准拿去搜尋：會把朋友的學校、工作之類的個資送到外部搜尋引擎
@@ -257,7 +265,8 @@ class Brain:
         return archive_tools.ArchiveTools(self.archive_db, archive_guild, resolve_person=resolve, profile=profile)
 
     async def _reply_agentic(self, guild_id: str, channel_key: str, author: Person, text: str, *, mentions,
-                             members, voice: str, spoken: bool, owner: str, archive_guild: str) -> str:
+                             members, voice: str, spoken: bool, owner: str, archive_guild: str,
+                             background=(), chimed: bool = False) -> str:
         """不先檢索：只帶發言者（和 @ 到的人）的人物檔案；群組的事讓 Yuki 自己用工具查。"""
         s = self.settings
         today = date.today()
@@ -267,7 +276,8 @@ class Brain:
         images = await self.collect_images(lines, spoken=spoken)
         system = prompts.reply_system(s.bot_name, whiteboard, None, today, profiles, web=self.web is not None,
                                       voice=voice, spoken=spoken, owner=owner,
-                                      archive=self.archive_db is not None, vision=bool(images))
+                                      archive=self.archive_db is not None, vision=bool(images),
+                                      background=background, chimed=chimed)
         messages = [{"role": "system", "content": system}] + vision.attach(to_messages(lines), images)
 
         everyone = [author, *mentions, *members]

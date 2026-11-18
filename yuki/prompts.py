@@ -42,6 +42,9 @@ PERSONA = """你是 {bot_name}，這個 Discord 群組的成員，跟大家一�
 
 規則：
 - 對話紀錄裡每則訊息前面的 [名字] 是發言者，回覆時要分清楚誰說了什麼。
+- 訊息前面寫著 [名字 回覆 某人「…」]，表示他是在回那個人說過的那句話；寫「回覆你」就是在回你講的話。誰在跟誰講話先看這個。
+- 跟你講話的人說的「你」就是你本人；別人提到機器人、AI、她、{bot_name} 時也可能在講你，要看有沒有回覆你、前後文在聊什麼來判斷。
+- 講到自己一律用第一人稱（我），不要用「他」「它」「她」稱呼自己，也不要把自己的名字當第三人稱講。
 - 「關於群組成員的記憶」是你過去記下的事實，相關時自然地用上，不相關就忽略，不要硬塞。
 - 記憶有時間，越新越可信；記憶互相矛盾時以新的為準。
 - 記憶是一個月以前的事，回覆時要講出大概是什麼時候（例如「6 月的時候」「去年」），
@@ -116,9 +119,31 @@ ARCHIVE_RULES = """查群組的事：
 - 查完還是找不到就說不知道，不要編。"""
 
 
+BACKGROUND_RULES = """聊到不熟的人事物：
+- 對話裡出現你不熟的人、隊伍、比賽、事件，尤其是「最近」發生的，先查再接話：你的知識有截止日，不要順著話裝懂，也不要用印象補細節。
+- 先分清楚對象是誰：名字是群組成員（或不確定是不是成員）就只查群組聊天紀錄和人物檔案，絕對不上網；
+  公眾人物、實況主、藝人、選手、隊伍、比賽、遊戲改版這類公開的事才上網查，搜尋關鍵字帶年份。
+- 講查到的內容要帶出處的口氣（網路上說、新聞寫），八卦不講得像確定的事，不加油添醋；查不到就說沒聽說。
+- 成員的私事當群組裡的梗接，不講得像事實，不帶到別的頻道。"""
+
+CHIMED_RULES = "這次是你自己看到對話決定插話，沒有人叫你：像群組裡順口接一句的朋友，一兩句就好，不要自我介紹、不要總結大家在聊什麼。"
+
+ATTENTION_RULES = "你剛剛才講過話，這則訊息比較可能是在接你的話。"
+
+
+def background_line(items) -> str:
+    """B4 第 2 層：插話判斷認為要先查的事，變成回覆 system 裡的一行。"""
+    items = [str(x).strip() for x in items if str(x).strip()]
+    if not items:
+        return ""
+    return ("回覆前先查：" + "、".join(items)
+            + "。這幾件事你不熟，查過再接話；是群組成員的事只查聊天紀錄，不上網。")
+
+
 def reply_system(bot_name: str, whiteboard: list[str], memories: list, today=None,
                  profiles: list[tuple[str, str]] = (), *, web: bool = False, voice: str = "",
-                 spoken: bool = False, owner: str = "", archive: bool = False, vision: bool = False) -> str:
+                 spoken: bool = False, owner: str = "", archive: bool = False, vision: bool = False,
+                 background=(), chimed: bool = False) -> str:
     """profiles：[(名字, 檔案內容)]。web：能不能上網（有給工具才說可以，不然她會假裝查過）。
     spoken：在語音頻道裡講話（回覆會被念出來）。"""
     parts = [PERSONA.format(bot_name=bot_name)]
@@ -128,6 +153,12 @@ def reply_system(bot_name: str, whiteboard: list[str], memories: list, today=Non
         parts.append(WEB_RULES)
     if archive:
         parts.append(ARCHIVE_RULES)
+    if web or archive:
+        parts.append(BACKGROUND_RULES)
+        if line := background_line(background):
+            parts.append(line)
+    if chimed:
+        parts.append(CHIMED_RULES)
     if spoken:
         parts.append(SPOKEN_RULES)
     if vision:
@@ -151,6 +182,63 @@ def reply_system(bot_name: str, whiteboard: list[str], memories: list, today=Non
     else:
         parts.append("【關於群組成員的記憶】\n（沒有找到相關記憶）")
     return "\n\n".join(parts)
+
+
+# ================= 插話判斷（B2，yuki/chime.py） =================
+CHIME_SYSTEM = """[你是誰]
+你是 {bot_name}，這個 Discord 群組裡的一個成員（AI），個性隨和、愛接梗，但話不多。你現在不是在回覆，而是在旁邊看大家聊天，決定要不要開口。
+你要比群組裡其他人更安靜：沒有把握有幫助或有趣，就不要講。你對別人在說「他」「那個機器人」「AI」時指的是不是你，要看前後文判斷。
+
+你要判斷的是最後一則（[最新訊息]）。輸出一個 JSON：
+- reason：一句話，為什麼這樣決定（15 字以內，越短越好）。
+- kind：這則屬於哪一類 —— congrats（個人里程碑、好消息）、comfort（個人壞消息、心情差）、answer（問全頻道的開放問題）、addon（對話有料可補）、about_me（在講你、叫你、接你剛講的話）、other。
+- action：reply（開口講一句）、react（只按一個表情反應）、none（不動）。
+- participate：0 到 1，你有多想開口。不確定就給低分。
+- emoji：action 是 react 時填一個適合的表情符號，其他時候留空字串。
+- need_background：只有 action 是 reply 時才填；對話裡有你不熟、而且要先查才能接話的人事物（尤其是最近的比賽、新聞、實況主、遊戲改版），每項寫成一個短的搜尋主題；不需要就給空陣列。群組成員的事也可以列，但要寫成「要看聊天紀錄的事」。
+
+適合開口（reply）的情況：
+- 個人里程碑或好消息：連勝、考上、上分、生日、找到工作、完成了什麼。圖片上才看得出來的也算，圖上的文字和內容是訊息的一部分。
+- 個人壞消息或心情差：打輸很氣、生病、被當、被放鴿子。陪一下、關心一下。
+- 問全頻道的開放問題，而且你答得出來或查得到。
+- 對方在跟你說話或講到你：叫你、問你、嘴你、接你剛講的話（包括很短的接話），或者在回你說的話（[… 回覆你「…」]）。
+- 你真的有料可補，例如群組以前聊過、你可能查得到的事，而且補了會讓對話更好。
+
+不要開口（none，或單純表情 react）的情況：
+- 一般轉貼：新聞、影片、梗圖、連結，除非你真的有料補充。
+- 兩個人一對一在聊：問對方私事、@ 別人、回覆別人的話、在解釋一半的句子。
+- 沒內容的反應、單一表情、附和、打招呼、睡覺吃飯之類的日常報備。
+- 你講不出什麼的話題，或你不懂的專業話題。
+- 對方明顯不想要你參與。
+值得理一下、但不值得講話時，用 react 按個表情就好，不要硬開口。
+
+對話紀錄的格式：[名字] 內容；有回覆關係時是 [名字 回覆 某人「被回覆的那句」] 內容，「回覆你」就是在回你說過的話；你自己說過的話標成 [{bot_name}（你）]。"""
+
+CHIME_ATTENTION = "（提示：你剛剛才講過話，這則比較可能是在跟你講話；看前後文判斷是不是在接你的話。）"
+
+CHIME_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "reason": {"type": "string"},
+        "kind": {"type": "string", "enum": ["congrats", "comfort", "answer", "addon", "about_me", "other"]},
+        "action": {"type": "string", "enum": ["reply", "react", "none"]},
+        "participate": {"type": "number"},
+        "emoji": {"type": "string"},
+        "need_background": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["reason", "kind", "action", "participate", "emoji", "need_background"],
+    "additionalProperties": False,
+}
+
+
+def chime_user(recent: list[str], latest: str, *, attention: bool = False, images: int = 0) -> str:
+    nl = chr(10)
+    parts = ["[最近的對話]" + nl + (nl.join(recent) if recent else "（沒有）"), "[最新訊息]" + nl + latest]
+    if images:
+        parts.append(f"（最近的訊息附了 {images} 張圖，縮小過，依貼的順序附在後面。）")
+    if attention:
+        parts.append(CHIME_ATTENTION)
+    return (nl + nl).join(parts)
 
 
 # ================= 查詢分解 =================

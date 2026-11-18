@@ -25,7 +25,7 @@ from . import vision
 
 log = logging.getLogger(__name__)
 
-KINDS = ("reply", "voice", "chime", "profile")  # chime 留給 B2（插話判斷），目前沒有接點
+KINDS = ("reply", "voice", "chime", "profile")  # chime = 插話判斷（B2，bot._chime）
 _FILE_RE = re.compile(r"^ai-(\d{4}-\d{2}-\d{2})\.jsonl$")
 
 _current: contextvars.ContextVar["Trace | None"] = contextvars.ContextVar("yuki_trace", default=None)
