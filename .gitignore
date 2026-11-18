@@ -198,3 +198,6 @@ searxng/config/settings.yml
 .claude/private-words.txt
 .claude/private-allow.txt
 .claude/settings.local.json
+
+# Claude Code agent worktrees
+.claude/worktrees/
