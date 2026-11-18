@@ -657,3 +657,10 @@ def test_chime_threshold_setting_prefers_prob_threshold_over_old_name(monkeypatc
     assert Settings().chime_threshold == 0.8
     assert ChimeLimits(1, threshold=Settings().chime_threshold).threshold == 0.8
     assert ChimeLimits(1, threshold=None).threshold == 0.7  # 沒設就照 CHIME_IN 等級
+
+
+def test_use_logprobs_setting_defaults_off(monkeypatch):
+    monkeypatch.delenv("CHIME_USE_LOGPROBS", raising=False)
+    assert Settings().chime_use_logprobs is False
+    monkeypatch.setenv("CHIME_USE_LOGPROBS", "1")
+    assert Settings().chime_use_logprobs is True

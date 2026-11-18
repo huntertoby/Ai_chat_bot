@@ -41,8 +41,7 @@ USE_LOGPROBS = True
 VARIANTS = {
     "none": "",
     # 在「不要開口」那段加一條
-    "explain_flow": "- 兩個人正在一來一往解釋事情、話還沒講完：那是他們之間的對話，等講完再說，不要插話。
-",
+    "explain_flow": "- 兩個人正在一來一往解釋事情、話還沒講完：那是他們之間的對話，等講完再說，不要插話。\n",
 }
 
 
@@ -380,6 +379,7 @@ async def eval_flood(llm, s, args) -> dict:
 
 
 async def main() -> None:
+    global THRESHOLD, USE_LOGPROBS
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", choices=["chime", "milestone", "flood"])
     ap.add_argument("--tag", default=None, help="只跑 chime 題目裡帶這個 tag 的")
@@ -389,9 +389,13 @@ async def main() -> None:
     ap.add_argument("--threshold", type=float, default=THRESHOLD, help="主結果用的門檻（掃描表另外列 0.5~0.8）")
     ap.add_argument("--no-logprobs", action="store_true", help="不用 logprobs，用模型寫的 participate（舊做法）")
     ap.add_argument("--variant", choices=list(VARIANTS), default="none", help="D-22 規則變體（只影響本次評估）")
+    ap.add_argument("--action-first", action="store_true", help="D-22 實驗：schema 把 action 放最前面（機率不受 reason 影響）")
     args = ap.parse_args()
-    global THRESHOLD, USE_LOGPROBS
     THRESHOLD, USE_LOGPROBS = args.threshold, not args.no_logprobs
+    if args.action_first:
+        order = ["action", "kind", "reason", "participate", "emoji", "need_background"]
+        sc = prompts.CHIME_SCHEMA
+        prompts.CHIME_SCHEMA = {**sc, "properties": {k: sc["properties"][k] for k in order}, "required": order}
     if VARIANTS[args.variant]:
         marker = "- 沒內容的反應"
         assert marker in prompts.CHIME_SYSTEM

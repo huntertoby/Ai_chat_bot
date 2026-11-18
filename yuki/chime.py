@@ -54,6 +54,7 @@ class Decision:
     # "participate" = 拿不到 logprobs，退回模型自己寫的數字。
     prob_source: str = "participate"
     model_participate: float = 0.0  # 模型自己寫的 participate（logprob 來源時只留作參考）
+    action_dist: dict | None = None  # action 位置各選項的機率（評估離線分析用）
 
     def should_reply(self, threshold: float) -> bool:
         if self.error:
@@ -73,6 +74,7 @@ class Decision:
         return {"participate": self.participate, "action": self.action, "emoji": self.emoji, "kind": self.kind,
                 "reason": self.reason, "need_background": self.need_background, "ms": self.ms,
                 "prob_source": self.prob_source, "model_participate": self.model_participate,
+                **({"action_dist": {k: round(v, 5) for k, v in self.action_dist.items()}} if self.action_dist else {}),
                 **({"error": self.error} if self.error else {})}
 
 
@@ -88,7 +90,18 @@ def _norm(tok: str) -> str:
 
 def action_prob(content: list[dict] | None) -> float | None:
     """輸出 JSON 裡 action 的值那個 token，top_logprobs 裡「開口」類的機率和 ÷（開口＋不開口的機率和）。
-    找不到那個位置、或前幾名裡完全沒有 action 的選項，回 None（呼叫端退回模型寫的 participate）。
+    找不到那個位置、或前幾名裡完全沒有 action 的選項，回 None（呼叫端退回模型寫的 participate）。"""
+    dist = action_dist(content)
+    if not dist:
+        return None
+    p_open = sum(dist.get(a, 0.0) for a in OPEN_ACTIONS)
+    p_closed = sum(dist.get(a, 0.0) for a in CLOSED_ACTIONS)
+    total = p_open + p_closed
+    return None if total <= 0 else p_open / total
+
+
+def action_dist(content: list[dict] | None) -> dict[str, float] | None:
+    """action 那個位置前幾名裡各選項（reply／react／none）的原始機率；找不到位置回 None。
     LM Studio 回的 content 是每個輸出 token 一筆：{"token", "logprob", "top_logprobs": [{"token", "logprob"}, ...]}。"""
     if not content:
         return None
@@ -106,16 +119,12 @@ def action_prob(content: list[dict] | None) -> float | None:
             pos += len(tk)
         if idx is None:
             return None
-        p_open = p_closed = 0.0
+        dist: dict[str, float] = {}
         for alt in content[idx].get("top_logprobs") or []:
             name = _norm(str(alt.get("token", "")))
-            pr = math.exp(float(alt.get("logprob", -1e9)))
-            if name in OPEN_ACTIONS:
-                p_open += pr
-            elif name in CLOSED_ACTIONS:
-                p_closed += pr
-        total = p_open + p_closed
-        return None if total <= 0 else p_open / total
+            if name in OPEN_ACTIONS or name in CLOSED_ACTIONS:
+                dist[name] = dist.get(name, 0.0) + math.exp(float(alt.get("logprob", -1e9)))
+        return dist or None
     except (TypeError, ValueError, AttributeError):
         return None
 
@@ -181,8 +190,9 @@ async def decide(llm, *, recent: list[ChatLine], latest: ChatLine, bot_name: str
     else:
         d = parse_decision(raw)
         if not d.error and use_logprobs:
-            p = action_prob(lp)
-            d.model_participate = d.participate
+            dist = action_dist(lp)
+            d.model_participate, d.action_dist = d.participate, dist
+            p = action_prob(lp) if dist else None
             if p is not None:
                 d.participate, d.prob_source = p, "logprob"
     d.ms = round((time.monotonic() - t0) * 1000)

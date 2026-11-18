@@ -219,8 +219,8 @@ class Settings:
     chime_threshold: float | None = field(default_factory=lambda: (
         _opt_float("CHIME_PROB_THRESHOLD") if _opt_float("CHIME_PROB_THRESHOLD") is not None
         else _opt_float("CHIME_THRESHOLD")))
-    # D-22：開口機率從 logprobs 算（拿不到會自動退回模型寫的 participate）；設 0 = 一律用模型寫的
-    chime_use_logprobs: bool = field(default_factory=lambda: _bool("CHIME_USE_LOGPROBS", True))
+    # D-22：開口機率從 logprobs 算（拿不到會退回模型寫的 participate）。實測沒比較準、慢約 0.07 秒，預設關
+    chime_use_logprobs: bool = field(default_factory=lambda: _bool("CHIME_USE_LOGPROBS", False))
     chime_debounce_sec: float = field(default_factory=lambda: _float("CHIME_DEBOUNCE_SEC", 4))
     chime_context_lines: int = field(default_factory=lambda: _int("CHIME_CONTEXT_LINES", 15))
     chime_max_images: int = field(default_factory=lambda: _int("CHIME_MAX_IMAGES", 3))
