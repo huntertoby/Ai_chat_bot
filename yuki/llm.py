@@ -5,9 +5,12 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any, Awaitable, Callable
 
 import httpx
+
+from . import trace
 
 log = logging.getLogger(__name__)
 
@@ -96,9 +99,14 @@ class LMStudioClient:
     async def resolve_model(self) -> str:
         if self.model:
             return self.model
-        resp = await self._http.get(f"{self.base_url}/models")
-        resp.raise_for_status()
-        ids = [m["id"] for m in resp.json().get("data", [])]
+        try:
+            resp = await self._http.get(f"{self.base_url}/models")
+            resp.raise_for_status()
+            ids = [m["id"] for m in resp.json().get("data", [])]
+        except httpx.TimeoutException as e:
+            raise LLMError(f"LM Studio 逾時：{e!r}") from e
+        except httpx.HTTPError as e:  # 連不上也走 LLMError，才會跟其他 LM Studio 錯誤一樣被通知
+            raise LLMError(f"LM Studio 連線失敗：{e!r}") from e
         chat_ids = [i for i in ids if "embed" not in i.lower() and "rerank" not in i.lower()]
         if not chat_ids:
             raise LLMError(f"LM Studio 沒有可用的聊天模型（看到的模型：{ids}）")
@@ -107,7 +115,22 @@ class LMStudioClient:
         return self.model
 
     async def _request(self, payload: dict[str, Any], reasoning_effort: str) -> dict[str, Any]:
-        """送出 chat/completions，回傳 choices[0].message（含 content、tool_calls）。"""
+        """送出 chat/completions，回傳 choices[0].message（含 content、tool_calls）。
+        有「目前的追蹤」（yuki.trace）時，把這一輪的 messages、回應、耗時記進去。"""
+        tr = trace.current()
+        if tr is None:
+            return await self._send(payload, reasoning_effort)
+        t0 = time.monotonic()
+        try:
+            message = await self._send(payload, reasoning_effort)
+        except BaseException as e:
+            tr.add_attempt(payload.get("messages", []), None, (time.monotonic() - t0) * 1000,
+                           error=f"{type(e).__name__}: {e}"[:300])
+            raise
+        tr.add_attempt(payload.get("messages", []), message, (time.monotonic() - t0) * 1000)
+        return message
+
+    async def _send(self, payload: dict[str, Any], reasoning_effort: str) -> dict[str, Any]:
         payload = {"model": await self.resolve_model(), "stream": False, **self.extra_body, **payload}
         if reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
@@ -146,6 +169,7 @@ class LMStudioClient:
         """可以用工具的聊天：模型要求呼叫工具 → 執行 → 把結果給它 → 再問一次，最多 max_rounds 輪。
         最後一輪不給工具，逼它用手上的資料回答。"""
         msgs = list(messages)
+        tr = trace.current()
         for rnd in range(max_rounds + 1):
             payload: dict[str, Any] = {"messages": msgs, "temperature": self.temperature,
                                        "max_tokens": self.max_tokens}
@@ -161,6 +185,8 @@ class LMStudioClient:
                 else:
                     # 工具次數用完了還想查：叫它用手上的資料回答，不然回覆會是一串 <tool_call>
                     log.info("工具次數用完但模型還想查，要求直接回答")
+                    if tr:
+                        tr.degrade("tool_budget")
                     nudge = msgs + [{"role": "user", "content": "（系統：不能再查了，根據上面已經查到的資料直接回答；"
                                                               "資料不夠就說不確定。）"}]
                     retry = await self._request({**payload, "messages": nudge}, "none")
@@ -184,8 +210,12 @@ class LMStudioClient:
                     args = {}
                 log.info("工具呼叫：%s %s", name, args)
                 result = await call_tool(name, args if isinstance(args, dict) else {})
+                if tr:
+                    tr.add_tool(name, args, result)
                 msgs.append({"role": "tool", "tool_call_id": call.get("id", ""), "name": name,
                              "content": result})
+        if tr:
+            tr.degrade("tool_budget")
         return ""
 
     async def chat(self, messages: list[dict], *, temperature: float | None = None,

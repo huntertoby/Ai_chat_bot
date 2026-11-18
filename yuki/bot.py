@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sys
 import time
+import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -12,6 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from . import alert, trace
 from .archive import ArchiveDB
 from .archive_sync import ArchiveSync, is_public
 from .brain import Brain
@@ -69,6 +72,12 @@ class YukiBot(commands.Bot):
         super().__init__(command_prefix=commands.when_mentioned, intents=intents,
                          allowed_mentions=NO_PING)
         self.settings = settings
+        # 維運（開發規格 6.12）：出錯私訊擁有者、AI 追蹤紀錄
+        self.alerter = alert.Alerter(settings.owner_user_ids, dedupe_min=settings.alert_dedupe_min,
+                                     max_per_hour=settings.alert_max_per_hour)
+        alert.set_default(self.alerter)
+        logging.getLogger().addHandler(alert.AlertLogHandler(self.alerter))
+        self._health_task: asyncio.Task | None = None
         self.brain = Brain.build(settings)
         self.active_until: dict[int, float] = {}
         self._members: dict[int, list[Person]] = {}
@@ -76,6 +85,8 @@ class YukiBot(commands.Bot):
         self._synced = False
         self.archive = ArchiveDB(ARCHIVE_PATH)
         self.sync = ArchiveSync(self.archive, settings.archive_role, set(settings.archive_exclude))
+        trace.configure(settings.trace_dir, max_days=settings.trace_max_days, max_mb=settings.trace_max_mb,
+                        opted_out=self._trace_opted_out)
         self.voice = VoicePresence(self.archive.db)
         self.brain.archive_db = self.archive.db  # agentic 檢索（開發規格 6.4）
         self._catchup_tasks: set = set()
@@ -108,9 +119,27 @@ class YukiBot(commands.Bot):
         try:
             await self.brain.warmup()
         except Exception:
-            log.exception("暖機失敗（LM Studio 沒開？），第一次對話時會再試")
+            # 只寫 warning：LM Studio 沒開時由健康檢查通知，避免同一件事收到兩則私訊
+            log.warning("暖機失敗（LM Studio 沒開？），第一次對話時會再試", exc_info=True)
+
+    def _trace_opted_out(self, guild_id: str, user_ids: list[str]) -> bool:
+        """`/不要記我` 的人（任何伺服器）參與的觸發，追蹤紀錄整筆不寫。"""
+        marks = ",".join("?" * len(user_ids))
+        row = self.archive.db.execute(f"SELECT 1 FROM optout WHERE user_id IN ({marks}) LIMIT 1",
+                                      list(user_ids)).fetchone()
+        return row is not None
+
+    async def _dm_owner(self, user_id: str, text: str) -> None:
+        user = await self.fetch_user(int(user_id))
+        await user.send(text, allowed_mentions=NO_PING)
+
+    async def on_error(self, event_method: str, /, *args, **kwargs) -> None:
+        # discord.py 預設只印到 stderr；改成 log，擁有者才收得到通知
+        log.exception("事件 %s 發生未捕捉的例外", event_method)
 
     async def close(self) -> None:
+        if self._health_task:
+            self._health_task.cancel()
         for gid in list(self.voice_sessions):
             await self.end_voice(gid)
         if self._profile_task:
@@ -122,6 +151,10 @@ class YukiBot(commands.Bot):
 
     async def on_ready(self) -> None:
         log.info("已登入為 %s，伺服器數：%d", self.user, len(self.guilds))
+        self.alerter.connect(self._dm_owner, self.loop)  # 連上之前排隊的通知在這裡一次補發
+        if self._health_task is None:
+            self._health_task = self.loop.create_task(
+                alert.health_loop(self.settings.lmstudio_base_url, self.settings.alert_health_sec, self.alerter))
         if not self._synced:  # on_ready 斷線重連時會再觸發，只同步一次
             self._synced = True
             for guild in self.guilds:
@@ -383,15 +416,23 @@ class YukiBot(commands.Bot):
 
         self.active_until[cid] = now + self.settings.attention_timeout
         self._replying += 1
+        tr = trace.start("reply", guild=message.guild.id if message.guild else "", channel=cid,
+                         trigger="called" if called else "active",
+                         user_ids=[author.id, *(m.id for m in mentions)])
         try:
-            async with message.channel.typing():
-                voice = self.voice.describe(str(message.guild.id), datetime.now()) if message.guild else ""
-                reply = await self.brain.reply(gid, channel_key, author, text, mentions=mentions,
-                                               members=self.members_of(message.guild), voice=voice,
-                                               owner=self.owner_name(message.guild),
-                                               archive_guild=self.archive_guild(message.guild))
-        except LLMError:
-            log.exception("回覆失敗")
+            async with tr:
+                async with message.channel.typing():
+                    voice = self.voice.describe(str(message.guild.id), datetime.now()) if message.guild else ""
+                    reply = await self.brain.reply(gid, channel_key, author, text, mentions=mentions,
+                                                   members=self.members_of(message.guild), voice=voice,
+                                                   owner=self.owner_name(message.guild),
+                                                   archive_guild=self.archive_guild(message.guild))
+                tr.final = reply
+        except LLMError as e:
+            # 用 warning：ERROR 會被 AlertLogHandler 當成另一種錯誤再通知一次
+            log.warning("回覆失敗 trace_id=%s", tr.trace_id, exc_info=True)
+            self.alerter.notify("lmstudio", "LM Studio 連線", "回覆時連不上 LM Studio", exc=e,
+                                trace_id=tr.trace_id)
             await message.reply("我跟 LM Studio 的連線好像斷了…等等再試一次？", mention_author=False)
             return
         finally:
@@ -540,10 +581,28 @@ def register_commands(bot: YukiBot) -> None:
             await interaction.response.send_message(msg, ephemeral=True)
 
 
+def _install_excepthooks() -> None:
+    """未捕捉的例外（主執行緒、其他執行緒）寫成 ERROR log，讓 AlertLogHandler 通知擁有者。"""
+    prev_hook, prev_thread = sys.excepthook, threading.excepthook
+
+    def hook(exc_type, exc, tb):
+        logging.getLogger("yuki.uncaught").error("未捕捉的例外", exc_info=(exc_type, exc, tb))
+        prev_hook(exc_type, exc, tb)
+
+    def thread_hook(args):
+        logging.getLogger("yuki.uncaught").error(
+            "執行緒 %s 未捕捉的例外", getattr(args.thread, "name", "?"),
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+        prev_thread(args)
+
+    sys.excepthook, threading.excepthook = hook, thread_hook
+
+
 def run() -> None:
     settings = load_settings()
     logging.basicConfig(level=settings.log_level,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if not settings.discord_token:
         raise SystemExit("找不到 DISCORD_TOKEN，請檢查 .env")
+    _install_excepthooks()
     YukiBot(settings).run(settings.discord_token, log_handler=None)

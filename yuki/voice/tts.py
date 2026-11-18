@@ -80,4 +80,9 @@ class BreezyTTS:
             if self.fallback is None:
                 raise
             logging.getLogger(__name__).warning("BreezyVoice 失敗（%s），改用 Edge", e)
+            from .. import alert, trace
+            tr = trace.current()
+            if tr:
+                tr.degrade("tts_edge")
+            alert.notify("breezy", "tts.py:BreezyTTS.synth", "BreezyVoice 沒有回應，語音暫時改用 Edge 念", exc=e)
             return await self.fallback.synth(text)

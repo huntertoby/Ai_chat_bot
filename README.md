@@ -58,6 +58,8 @@ yuki/
   brain.py                 回覆流程（agentic / 舊的 embedding RAG）
   llm.py                   LM Studio async client、tool calling
   prompts.py               人設與所有 prompt
+  trace.py                 AI 追蹤紀錄（data/logs/ai/*.jsonl）
+  alert.py                 出錯私訊擁有者、LM Studio 健康檢查
   archive.py               封存區（SQLite）+ 全文索引
   archive_sync.py          啟動補抓、即時封存
   voice_presence.py        語音頻道在場狀態
@@ -151,6 +153,41 @@ powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bo
 
 - @Yuki、訊息含「yuki」、回覆 Yuki 或私訊 → 回應，並在 3 分鐘內持續注意這個頻道；說「掰掰」「退下」結束。
 - 語音裡只有你和她時每句都回；有其他人在時要叫她名字。
+
+## 維運：AI 追蹤紀錄與出錯通知
+
+**追蹤紀錄**：Yuki 每次動用 AI（文字回覆 `reply`、語音回覆 `voice`、背景人物檔案更新 `profile`）都寫一行 JSON 到
+`data/logs/ai/ai-YYYY-MM-DD.jsonl`（只存本機，`data/` 不進 repo）。一行裡有 `trace_id`、`outcome`（ok／skipped／error）、
+`degraded`（例如 `tts_edge`、`tool_budget`）、`latency_ms`（語音分 `asr`／`llm`／`tts`）、`attempts`（每一輪 LLM 的 messages、
+工具呼叫與結果、回應）、`final`、`error`。一般 log（`logs/yuki.log`）只多一行 `trace_id=...`，用來對照。
+`/不要記我` 的人參與的觸發整筆不寫。檔案保留 `TRACE_MAX_DAYS` 天、總量上限 `TRACE_MAX_MB`，超過從最舊的刪起。
+
+```bash
+# 最近的錯誤
+jq 'select(.outcome=="error") | {trace_id, ts, kind, error}' data/logs/ai/ai-*.jsonl
+# 哪些回覆退回備案（BreezyVoice 換 Edge、工具次數用完）
+jq 'select(.degraded | length > 0) | {trace_id, kind, degraded}' data/logs/ai/ai-*.jsonl
+# 語音延遲卡在哪
+jq 'select(.kind=="voice") | .latency_ms' data/logs/ai/ai-*.jsonl
+# 某一筆她查了什麼
+jq 'select(.trace_id=="<trace_id>") | .attempts[].tools' data/logs/ai/ai-*.jsonl
+```
+
+**出錯私訊**：出事時 `OWNER_USER_IDS` 裡的人會收到 Discord 私訊（沒設就只寫 log）。會通知的事：LM Studio 連不上
+（回覆失敗，或背景每 `ALERT_HEALTH_SEC` 秒的健康檢查）、BreezyVoice 掛了退回 Edge、SearXNG 連不上、語音收音解密失敗、
+以及任何 ERROR 以上的 log（未捕捉的例外、discord.py 斷線等）。規則：
+
+- 同一種錯誤（類型＋位置）`ALERT_DEDUPE_MIN` 分鐘內只通知一次；全部加起來每小時最多 `ALERT_MAX_PER_HOUR` 則。
+- 還沒連上 Discord 時發生的錯誤先排隊，連上後合成一則補發。
+- 送出前會遮掉 token、API key、`Bearer ...`、長串亂碼；只寫錯誤第一行和 `trace_id`，不貼整段 traceback。
+
+| 設定 | 預設 | 說明 |
+|---|---|---|
+| `TRACE_MAX_DAYS` | 14 | 追蹤紀錄保留天數 |
+| `TRACE_MAX_MB` | 200 | 追蹤紀錄總量上限 |
+| `ALERT_DEDUPE_MIN` | 30 | 同一種錯誤的通知間隔（分鐘） |
+| `ALERT_MAX_PER_HOUR` | 10 | 每小時最多幾則通知 |
+| `ALERT_HEALTH_SEC` | 60 | LM Studio 健康檢查間隔（秒） |
 
 ## 測試與評估
 

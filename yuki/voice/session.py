@@ -12,11 +12,13 @@ from typing import TYPE_CHECKING
 import discord
 from discord.ext import voice_recv
 
+from .. import alert, trace
 from ..brain import to_traditional
+from ..llm import LLMError
 from ..memory.writer import ChatLine
 from ..rag.decompose import Person
 from .asr import asr_context
-from .dave import patch_reader
+from .dave import decrypt_error_count, patch_reader
 from .segmenter import Segmenter, Utterance, to_16k
 from .tts import sentences
 
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
     from ..bot import YukiBot
 
 log = logging.getLogger(__name__)
+DECRYPT_CHECK_SEC = 30  # 多久看一次收音解密失敗的計數
 BARGE_IN_MS = 500  # Yuki 講話時，名單上的人連續講超過這麼久就停下來
 
 
@@ -71,6 +74,8 @@ class VoiceSession:
         self._alone_since: float | None = None
         self._tasks: list[asyncio.Task] = []
         self._closed = False
+        self._decrypt_errors = 0
+        self._decrypt_checked = time.monotonic()
 
     @property
     def channel(self) -> discord.VoiceChannel:
@@ -110,6 +115,9 @@ class VoiceSession:
                 if not self.vc.is_connected():
                     break
                 now = time.monotonic()
+                if now - self._decrypt_checked >= DECRYPT_CHECK_SEC:
+                    self._decrypt_checked = now
+                    self._check_decrypt()
                 for utt in self.segmenter.tick(now):
                     # 馬上轉文字，不用等 Yuki 講完或想完上一句（ASR 本身一次處理一句）
                     task = asyncio.create_task(self._transcribe(utt))
@@ -131,6 +139,17 @@ class VoiceSession:
         except Exception:
             log.exception("語音監看失敗")
         await self.bot.end_voice(self.channel.guild.id)
+
+    def _check_decrypt(self) -> None:
+        """每 30 秒看一次解密失敗計數；有新增就寫一行 warning 並通知（不是每個封包都通知）。"""
+        total = decrypt_error_count(getattr(self.vc, "_dave_stats", None))
+        new = total - self._decrypt_errors
+        if new <= 0:
+            return
+        self._decrypt_errors = total
+        log.warning("語音：最近 %d 秒有 %d 個封包解密失敗（累計 %d），已用靜音取代", DECRYPT_CHECK_SEC, new, total)
+        alert.notify("voice_decrypt", "dave.py:e2ee_decrypt",
+                     f"語音收音解密失敗（#{self.channel.name} 最近有 {new} 個封包聽不到）")
 
     def interrupt(self) -> None:
         self._interrupt.set()
@@ -154,7 +173,7 @@ class VoiceSession:
         log.info("語音：%s（%.1f 秒）→「%s」ASR %.2f 秒（講完後 %.2f 秒）", member.display_name, utt.seconds,
                  text, t - t0, t - utt.ended)
         if text:
-            self.queue.put_nowait((utt, member, text, t))
+            self.queue.put_nowait((utt, member, text, t, (t - t0) * 1000))
 
     async def _work(self) -> None:
         while not self._closed:
@@ -163,13 +182,16 @@ class VoiceSession:
                 await self.handle(*item)
             except asyncio.CancelledError:
                 raise
+            except LLMError:
+                log.warning("語音：LM Studio 失敗，這句沒回", exc_info=True)  # 已通知；用 warning 避免重複通知
             except Exception:
                 log.exception("語音：處理一句話失敗")
 
     def _member(self, user_id: str) -> discord.Member | None:
         return self.channel.guild.get_member(int(user_id))
 
-    async def handle(self, utt: Utterance, member: discord.Member, text: str, t_asr: float) -> None:
+    async def handle(self, utt: Utterance, member: discord.Member, text: str, t_asr: float,
+                     asr_ms: float | None = None) -> None:
         await self._post_log(f"🎙️ **{member.display_name}**：{text}")
 
         author = Person(str(member.id), member.display_name)
@@ -184,25 +206,36 @@ class VoiceSession:
         if not self.queue.empty():
             return  # 後面還有話在排隊：等最後一句再一起回，不要一句一句搶著講
 
-        self.bot._replying += 1
-        try:
-            gid = str(self.channel.guild.id)
-            voice_now = self.bot.voice.describe(gid, datetime.now())
-            reply = await self.bot.brain.reply(gid, self.channel_key, author, text,
-                                               members=self.bot.members_of(self.channel.guild),
-                                               voice=voice_now, spoken=True,
-                                               owner=self.bot.owner_name(self.channel.guild),
-                                               archive_guild=self.bot.archive_guild(self.channel.guild))
-        finally:
-            self.bot._replying -= 1
-        t_llm = time.monotonic()
-        log.info("語音：Yuki 回「%s」LLM %.2f 秒", reply, t_llm - t_asr)
-        if not reply:
-            return
-        self.bot.brain.observe(self.channel_key, ChatLine(Person(str(self.bot.user.id), self.s.bot_name),
-                                                          reply, is_bot=True))
-        await self._post_log(f"🔊 **{self.s.bot_name}**：{reply}")
-        await self.speak(reply, started=utt.ended)
+        gid = str(self.channel.guild.id)
+        async with trace.start("voice", guild=gid, channel=self.channel.id, trigger="voice",
+                               user_ids=[author.id]) as tr:
+            if asr_ms is not None:
+                tr.lat("asr", asr_ms)
+            self.bot._replying += 1
+            t_start = time.monotonic()
+            try:
+                voice_now = self.bot.voice.describe(gid, datetime.now())
+                reply = await self.bot.brain.reply(gid, self.channel_key, author, text,
+                                                   members=self.bot.members_of(self.channel.guild),
+                                                   voice=voice_now, spoken=True,
+                                                   owner=self.bot.owner_name(self.channel.guild),
+                                                   archive_guild=self.bot.archive_guild(self.channel.guild))
+            except LLMError as e:
+                alert.notify("lmstudio", "LM Studio 連線", "語音回覆時連不上 LM Studio", exc=e)
+                raise
+            finally:
+                self.bot._replying -= 1
+                tr.lat("llm", (time.monotonic() - t_start) * 1000)
+            t_llm = time.monotonic()
+            log.info("語音：Yuki 回「%s」LLM %.2f 秒", reply, t_llm - t_asr)
+            tr.final = reply or None
+            if not reply:
+                tr.outcome = "skipped"
+                return
+            self.bot.brain.observe(self.channel_key, ChatLine(Person(str(self.bot.user.id), self.s.bot_name),
+                                                              reply, is_bot=True))
+            await self._post_log(f"🔊 **{self.s.bot_name}**：{reply}")
+            await self.speak(reply, started=utt.ended)
 
     async def speak(self, text: str, *, started: float | None = None) -> None:
         parts = sentences(text)[:3]  # 模型偶爾講太長：最多念 3 句
@@ -212,9 +245,12 @@ class VoiceSession:
         # 每句同時開始合成，念第一句的時候後面的已經在準備
         jobs = [asyncio.create_task(self.bot.voice_tts.synth(p)) for p in parts]
         self.speaking = True
+        tr, t_speak = trace.current(), time.monotonic()
         try:
             for i, job in enumerate(jobs):
                 mp3 = await job
+                if i == 0 and tr:
+                    tr.lat("tts", (time.monotonic() - t_speak) * 1000)  # 第一句合成完成的時間
                 if self._interrupt.is_set() or not self.vc.is_connected():
                     break
                 if i == 0 and started is not None:

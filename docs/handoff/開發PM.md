@@ -15,13 +15,13 @@
 - 只結束自己啟動的 Yuki／BreezyVoice 程序（Yuki 可能是使用者自己開的）。
 
 ## 現況（最後更新：2026-11-18）
-- 進行中：A1 第二版已 push。使用者裝過捷徑後要求先關掉：已 stop，並用 uninstall.ps1 移除捷徑（2026-11-18）。要恢復時跑 powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bot\scripts\autostart\install.ps1（要用完整路徑，使用者回報相對路徑會錯），再重開機登入、測試伺服器 /來語音 驗收（LM Studio 實際載入模型也在那時才驗到）。
-- 最近完成：A1 腳本兩版（scripts/autostart/：四個看顧＋start/stop/install）。
+- 進行中：A2 已 push，等使用者確認收到 LM Studio 掛掉的私訊（只一則）；語音分段耗時併入 A3 驗。接著做 A4。A1 暫停中（使用者要求，捷徑已移除；恢復跑 powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bot\scripts\autostart\install.ps1）。
+- 最近完成：A2 追蹤紀錄＋出錯私訊（docs/stages/A2-報告.md）；A1 腳本兩版。
 - 已知：顯卡被別的工具的 gemma（16GB）佔著時，Yuki 的模型載不進去。Docker Desktop 開時會跳視窗。Docker＋SearXNG 目前開著（實作測試時開的）。
 
 ## 待辦（階段 A，照順序）
 - [ ] A1（等使用者驗收）開機自動啟動 Yuki 和 BreezyVoice（啟動資料夾捷徑，D-15；BreezyVoice 要等 WSL 起來；Yuki 掛掉要自動重開）。只動啟動資料夾，其他系統設定要改先回報。
-- [ ] A2 維運：AI 追蹤紀錄、出錯私訊擁有者（開發規格 6.12）
+- [ ] A2（等使用者確認私訊） 維運：AI 追蹤紀錄、出錯私訊擁有者（開發規格 6.12）
 - [ ] A3 語音實測收尾（開發規格 6.0 的 5 項實測；要使用者一起進語音）
 - [ ] A4 小修：
   - 人物檔案自動更新每分鐘空跑（`yuki/profile/auto.py`：發言太少、不建檔的人一直被 `has_unmerged` 當成還沒合併）→ log 只在真的有更新時寫

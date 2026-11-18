@@ -175,6 +175,14 @@ class Settings:
     # 有其他人在時：叫她名字後幾秒內，名單上的人說的話都回
     voice_attention_seconds: int = field(default_factory=lambda: _int("VOICE_ATTENTION_SECONDS", 60))
 
+    # ---- 維運（開發規格 6.12）：AI 追蹤紀錄、出錯私訊 OWNER_USER_IDS ----
+    trace_dir: Path = field(default_factory=lambda: ROOT / _str("TRACE_DIR", "data/logs/ai"))
+    trace_max_days: int = field(default_factory=lambda: _int("TRACE_MAX_DAYS", 14))
+    trace_max_mb: int = field(default_factory=lambda: _int("TRACE_MAX_MB", 200))
+    alert_dedupe_min: int = field(default_factory=lambda: _int("ALERT_DEDUPE_MIN", 30))
+    alert_max_per_hour: int = field(default_factory=lambda: _int("ALERT_MAX_PER_HOUR", 10))
+    alert_health_sec: int = field(default_factory=lambda: _int("ALERT_HEALTH_SEC", 60))
+
     db_path: Path = field(default_factory=lambda: ROOT / _str("DB_PATH", "data/yuki.db"))
     log_level: str = field(default_factory=lambda: _str("LOG_LEVEL", "INFO"))
 

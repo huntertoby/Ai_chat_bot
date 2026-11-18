@@ -108,6 +108,11 @@ def install() -> None:
     _make_decoder_safe()
 
 
+def decrypt_error_count(stats: dict | None) -> int:
+    """why 計數裡「解密失敗換成靜音」的總次數（key 以 error: 開頭）。"""
+    return sum(v for k, v in (stats or {}).items() if k.startswith("error:"))
+
+
 def patch_reader(vc) -> None:
     """vc.listen(...) 之後馬上呼叫。"""
     install()

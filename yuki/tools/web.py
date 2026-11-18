@@ -19,6 +19,8 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from .. import alert
+
 log = logging.getLogger(__name__)
 
 TOOL_SPECS: list[dict[str, Any]] = [
@@ -137,6 +139,7 @@ class WebTools:
             resp.raise_for_status()
         except httpx.HTTPError as e:
             log.warning("SearXNG 搜尋失敗（%s 有開嗎？）：%r", self.searxng_url, e)
+            alert.notify("searxng", "web.py:search", f"SearXNG 搜尋連不上（{self.searxng_url}）", exc=e)
             return "搜尋服務沒有回應"
         results = resp.json().get("results", [])[:n]
         if not results:

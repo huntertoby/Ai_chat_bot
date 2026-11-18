@@ -7,12 +7,14 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
 import time
 from datetime import date
 
+from .. import trace
 from ..llm import LLMError, LMStudioClient
 from . import prompts
 from .chunk import Segment, segments, to_lines
@@ -96,11 +98,14 @@ class ProfileBuilder:
             {"role": "user", "content": prompts.extract_user(seg.channel_name, list(speakers.values()), others,
                                                              seg.render())},
         ]
-        data = await self.llm.chat_json(messages, prompts.EXTRACT_SCHEMA, name="profile_items",
-                                        max_tokens=self.max_tokens)
-        if data is None:
-            # 沒拿到 JSON（多半是推理把 token 用完）不能當成「這段沒東西」，不然進度往前推就再也不會處理
-            raise LLMError("沒有拿到 JSON 結果")
+        async with trace.start("profile", guild=self.guild_id, channel=seg.channel_id,
+                               trigger="extract") as tr:
+            data = await self.llm.chat_json(messages, prompts.EXTRACT_SCHEMA, name="profile_items",
+                                            max_tokens=self.max_tokens)
+            tr.final = None if data is None else json.dumps(data, ensure_ascii=False)
+            if data is None:
+                # 沒拿到 JSON（多半是推理把 token 用完）不能當成「這段沒東西」，不然進度往前推就再也不會處理
+                raise LLMError("沒有拿到 JSON 結果")
         return parse_items(data, seg, self.by_name, self.names)
 
     async def extract(self, *, limit: int | None = None, channel: str | None = None) -> int:
@@ -155,11 +160,16 @@ class ProfileBuilder:
                 {"role": "system", "content": prompts.MERGE_SYSTEM.format(name=name, limit=self.profile_limit)},
                 {"role": "user", "content": prompts.merge_user(name, current, [f.line() for _, f in batch])},
             ]
-            try:
-                out = await self.llm.chat(messages, temperature=0.3, max_tokens=self.max_tokens)
-            except LLMError as e:
-                log.warning("%s 整理失敗：%s", name, e)
-                return False
+            async with trace.start("profile", guild=self.guild_id, trigger="merge") as tr:
+                try:
+                    out = await self.llm.chat(messages, temperature=0.3, max_tokens=self.max_tokens)
+                except LLMError as e:
+                    tr.outcome, tr.error = "error", str(e)[:500]
+                    log.warning("%s 整理失敗：%s", name, e)
+                    return False
+                tr.final = out
+                if "## 基本資料" not in self._body(out):
+                    tr.outcome, tr.error = "error", "整理結果格式不對"
             body = self._body(out)
             if "## 基本資料" not in body:
                 log.warning("%s 整理結果格式不對，略過這批：%s", name, out[:200])
