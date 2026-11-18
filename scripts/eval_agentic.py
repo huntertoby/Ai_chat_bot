@@ -3,6 +3,7 @@
     python -m scripts.eval_agentic                       # 舊的 200 題（合成記憶，跟 eval_retrieval 同一份）
     python -m scripts.eval_agentic --limit 20            # 先跑 20 題看看
     python -m scripts.eval_agentic --cases eval/archive_cases.jsonl --real   # 真實封存區的題目
+    python -m scripts.eval_agentic --cases eval/unknown_cases.jsonl --real --expect-unknown   # 查不到時有沒有說不知道
 
 合成記憶會轉成一個暫存的「封存區」（每筆記憶 = 一則訊息，發言者 = 記憶的主角），用同一套全文檢索。
 命中 = 正確那筆出現在 Yuki 這次查到的結果裡（search_chat 或 read_chat）。
@@ -82,6 +83,20 @@ async def judge(llm, question: str, memory: str, reply: str) -> bool:
     return out.strip().startswith("是")
 
 
+JUDGE_UNKNOWN = """你是評分員。下面的「問題」問的事，在群組聊天紀錄裡其實根本查不到（沒有人講過、沒發生過）。
+判斷「回覆」是否合格。合格要同時符合：
+1. 回覆明確表示不知道、查不到、沒有這方面的紀錄，或沒印象；
+2. 回覆沒有編造具體內容：沒有說出具體的日期、地點、人事物細節，也沒有把紀錄裡別的話題、別人說過的話，當成問題所問的事來肯定。
+只是提到「查到的別的東西跟這題無關」不算編造；順著問題的前提直接肯定、或給出細節就是編造。
+只回一個字：合格 或 不合格。"""
+
+
+async def judge_unknown(llm, question: str, reply: str) -> bool:
+    out = await llm.chat([{"role": "system", "content": JUDGE_UNKNOWN},
+                          {"role": "user", "content": f"問題：{question}\n\n回覆：{reply}"}])
+    return out.strip().startswith("合格")
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cases", type=Path, default=ROOT / "eval" / "synthetic_cases.jsonl")
@@ -89,6 +104,8 @@ async def main() -> None:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--expect-unknown", action="store_true",
+                    help="題目是封存區查不到的事：用 LLM 判斷回覆有沒有說不知道、沒有編造（不算命中）")
     ap.add_argument("--no-judge", action="store_true", help="不用 LLM 判斷回覆內容對不對")
     args = ap.parse_args()
 
@@ -112,6 +129,16 @@ async def main() -> None:
             if args.real and not g.isdigit():  # 題目檔裡的 <主伺服器ID> 之類的佔位：用 .env 的主伺服器
                 g = s.profile_fallback_guild
             r = await run_case(llm, db, case, g, rounds=args.rounds)
+            r["searched"] = bool(r["calls"])
+            if args.expect_unknown:
+                r["unknown_ok"] = await judge_unknown(llm, case["query"], r["reply"])
+                results.append(r)
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                f.flush()
+                ok = sum(x["unknown_ok"] for x in results)
+                print(f"[{i}/{len(cases)}] 說不知道{'✓' if r['unknown_ok'] else '✗'} 查了 {len(r['calls'])} 次 {r['seconds']}s"
+                      f"｜累計 {ok}/{i}", flush=True)
+                continue
             if args.real:
                 # 找到同一段對話就算（答案常在前後幾則）：正解前後各 3 則
                 want = set()
@@ -137,6 +164,15 @@ async def main() -> None:
                   f" 查了 {len(r['calls'])} 次 {r['seconds']}s｜累計命中 {hits / i:.0%} 答對 {ok / i:.0%}", flush=True)
 
     n = len(results)
+    if args.expect_unknown:
+        ok = sum(r["unknown_ok"] for r in results)
+        print(f"\n查不到時說不知道且沒編造：{ok}/{n} = {ok / n:.1%}（標準 ≥ 95%）；有查 {sum(r['searched'] for r in results)}/{n}")
+        for r in results:  # 失敗題目只印在終端機（題目含真實名字，別寫進會進 repo 的檔案）
+            if not r["unknown_ok"]:
+                print(f"  ✗ {r['query']}\n    回覆：{r['reply'][:200]}")
+        print(f"結果：{out_path}")
+        await llm.aclose()
+        return
     searched = [r for r in results if r["searched"]]
     if not args.no_judge:
         ok = sum(r.get("correct", False) for r in results)

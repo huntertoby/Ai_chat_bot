@@ -186,6 +186,7 @@ chroma_memory/
 
 # 真實聊天內容出的評估題（開發規格 6.4）
 eval/archive_cases.jsonl
+eval/unknown_cases.jsonl
 
 # 公開 repo 不放：真實聊天的分析、log、含 secret_key 的 SearXNG 設定（用 settings.example.yml 複製一份）
 Luna對話分析.md

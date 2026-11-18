@@ -15,15 +15,15 @@
 - 只結束自己啟動的 Yuki／BreezyVoice 程序（Yuki 可能是使用者自己開的）。
 
 ## 現況（最後更新：2026-11-18）
-- 進行中：A4。A2 完成（語音分段耗時併入 A3 驗；開發規格 6.12 還沒標完成，因為工作目錄裡該檔有別的 session 未 commit 的改動）。A1 暫停中（使用者要求，捷徑已移除；恢復跑 powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bot\scripts\autostart\install.ps1）。
-- 最近完成：A2 追蹤紀錄＋出錯私訊（docs/stages/A2-報告.md）；A1 腳本兩版。
+- 進行中：A4 完成，等總 PM 決定「查不到說不知道 80%」要不要另開一項改 prompt；下一項 A3（要使用者一起進語音）。A1 暫停中（使用者要求，捷徑已移除；恢復跑 powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bot\scripts\autostart\install.ps1）。
+- 最近完成：A4（docs/stages/A4-報告.md）、A2 追蹤紀錄＋出錯私訊、A1 腳本兩版。
 - 已知：顯卡被別的工具的 gemma（16GB）佔著時，Yuki 的模型載不進去。Docker Desktop 開時會跳視窗。Docker＋SearXNG 目前開著（實作測試時開的）。
 
 ## 待辦（階段 A，照順序）
 - [ ] A1（等使用者驗收）開機自動啟動 Yuki 和 BreezyVoice（啟動資料夾捷徑，D-15；BreezyVoice 要等 WSL 起來；Yuki 掛掉要自動重開）。只動啟動資料夾，其他系統設定要改先回報。
 - [x] A2（語音耗時併入 A3） 維運：AI 追蹤紀錄、出錯私訊擁有者（開發規格 6.12）
 - [ ] A3 語音實測收尾（開發規格 6.0 的 5 項實測；要使用者一起進語音）
-- [ ] A4 小修：
+- [x] A4 小修：
   - 人物檔案自動更新每分鐘空跑（`yuki/profile/auto.py`：發言太少、不建檔的人一直被 `has_unmerged` 當成還沒合併）→ log 只在真的有更新時寫
   - 量「查不到時說不知道」（開發規格 6.4 表格最後一列）
   - 開發規格第 7、8 節照現況更新（git、SearXNG、README 那幾條已處理）
