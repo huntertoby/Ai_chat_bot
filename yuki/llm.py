@@ -163,6 +163,33 @@ class LMStudioClient:
     async def _complete(self, payload: dict[str, Any], reasoning_effort: str) -> str:
         return (await self._request(payload, reasoning_effort)).get("content") or ""
 
+    async def _answer_from_results(self, msgs: list[dict], payload: dict[str, Any], text: str,
+                                   *, plain_retry: bool = True, n_base: int = 0) -> str:
+        """模型回空字串時補救（推理模型有時把答案寫在思考裡、正文是空的）：
+        1. 不給工具、不思考再問一次；2. 還是空的，加一句「依照查到的內容回答，查不到就直說」再問；仍空才放棄。"""
+        no_tools = {k: v for k, v in payload.items() if k != "tools"}
+        if plain_retry and not text and self.reasoning_effort not in ("", "none"):
+            retry = await self._request({**no_tools, "messages": msgs}, "none")
+            text = strip_text_calls(strip_think(retry.get("content") or ""))
+        if not text:
+            nudge = msgs + [{"role": "user", "content": "（系統：不能再查了，依照上面查到的內容回答；"
+                                                      "查不到就直接說查不到、沒印象。）"}]
+            retry = await self._request({**no_tools, "messages": nudge}, "none")
+            text = strip_text_calls(strip_think(retry.get("content") or ""))
+        if not text:
+            # 模型被工具呼叫的格式帶著走，一直想再查（輸出 <tool_call> 被濾掉就變空字串）：
+            # 把查到的結果攤平成一則普通訊息，上下文裡就沒有工具呼叫可以學了
+            found = [m.get("content") or "" for m in msgs if m.get("role") == "tool"]
+            base = msgs[:n_base]
+            flat = base + [{"role": "user", "content": (
+                "（系統：以下是你剛剛查到的群組聊天紀錄，不能再查了。\n" + "\n---\n".join(found)
+                + "\n\n依照這些內容回答上面的問題；紀錄裡找不到問題問的那件事，就直接說查不到、沒印象。）")}]
+            retry = await self._request({**no_tools, "messages": flat}, "none")
+            text = strip_text_calls(strip_think(retry.get("content") or ""))
+            if not text:
+                log.warning("查完工具後模型連續回空字串")
+        return text
+
     async def chat_tools(self, messages: list[dict], tools: list[dict],
                          call_tool: Callable[[str, dict], Awaitable[str]], *, max_rounds: int = 3,
                          max_calls: int = 3) -> str:
@@ -187,18 +214,12 @@ class LMStudioClient:
                     log.info("工具次數用完但模型還想查，要求直接回答")
                     if tr:
                         tr.degrade("tool_budget")
-                    nudge = msgs + [{"role": "user", "content": "（系統：不能再查了，根據上面已經查到的資料直接回答；"
-                                                              "資料不夠就說不確定。）"}]
-                    retry = await self._request({**payload, "messages": nudge}, "none")
-                    return strip_text_calls(strip_think(retry.get("content") or ""))
+                    return await self._answer_from_results(msgs, payload, "", plain_retry=False, n_base=len(messages))
             if not calls:
                 text = strip_text_calls(content)
-                if not text and self.reasoning_effort not in ("", "none"):
-                    # 推理模型有時把答案寫在思考裡就結束，正文是空的；不思考再問一次
-                    log.info("回覆是空的，改用 reasoning_effort=none 重試")
-                    no_tools = {k: v for k, v in payload.items() if k != "tools"}
-                    retry = await self._request(no_tools, "none")
-                    text = strip_think(retry.get("content") or "")
+                if not text:
+                    log.info("回覆是空的，改用不思考重試")
+                    text = await self._answer_from_results(msgs, payload, text, n_base=len(messages))
                 return text
             msgs.append({"role": "assistant", "content": message.get("content") or "", "tool_calls": calls})
             for call in calls:

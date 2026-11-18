@@ -145,3 +145,66 @@ def test_thinking_off_also_sets_chat_template_kwargs():
     llm2._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     asyncio.run(llm2.chat([{"role": "user", "content": "q"}]))
     assert "chat_template_kwargs" not in sent[1]
+
+
+def _empty_llm(replies, effort="low"):
+    from yuki.llm import LMStudioClient
+    llm = LMStudioClient("http://x", "m", reasoning_effort=effort)
+    seen = []
+    it = iter(replies)
+
+    async def fake_request(payload, eff):
+        seen.append((payload, eff))
+        return next(it)
+
+    llm._request = fake_request
+    return llm, seen
+
+
+def test_chat_tools_empty_after_retry_asks_again_with_nudge():
+    call = {"content": "", "tool_calls": [tool_call("web_search", {"query": "x"})]}
+    llm, seen = _empty_llm([call, {"content": ""}, {"content": ""}, {"content": "查不到耶"}])
+
+    async def run(name, args):
+        return "（沒有結果）"
+
+    out = asyncio.run(llm.chat_tools([{"role": "user", "content": "q"}], [{"t": 1}], run))
+    assert out == "查不到耶"
+    assert len(seen) == 4
+    assert "tools" not in seen[3][0] and seen[3][1] == "none"
+    assert "查不到" in seen[3][0]["messages"][-1]["content"]
+
+
+def test_chat_tools_empty_gives_up_only_after_nudge():
+    llm, seen = _empty_llm([{"content": ""}] * 4)
+
+    async def run(name, args):
+        return ""
+
+    assert asyncio.run(llm.chat_tools([{"role": "user", "content": "q"}], [{"t": 1}], run)) == ""
+    assert len(seen) == 4  # 原本、不思考、加提醒、攤平成一般訊息
+
+
+def test_chat_tools_empty_with_effort_none_still_nudges():
+    llm, seen = _empty_llm([{"content": ""}, {"content": "不知道欸"}], effort="none")
+
+    async def run(name, args):
+        return ""
+
+    assert asyncio.run(llm.chat_tools([{"role": "user", "content": "q"}], [{"t": 1}], run)) == "不知道欸"
+    assert len(seen) == 2
+
+
+def test_chat_tools_flattens_results_when_model_keeps_calling_tools():
+    call = {"content": "", "tool_calls": [tool_call("web_search", {"query": "x"})]}
+    again = {"content": "<tool_call>\n<function=web_search>\n<parameter=query>\nx\n</parameter>\n</function>\n</tool_call>"}
+    llm, seen = _empty_llm([call, again, again, {"content": "沒查到欸"}], effort="none")
+
+    async def run(name, args):
+        return "這是查到的內容"
+
+    out = asyncio.run(llm.chat_tools([{"role": "user", "content": "q"}], [{"t": 1}], run, max_rounds=1))
+    assert out == "沒查到欸"
+    last = seen[-1][0]["messages"]
+    assert not any(m.get("role") == "tool" or m.get("tool_calls") for m in last)
+    assert "這是查到的內容" in last[-1]["content"] and last[0] == {"role": "user", "content": "q"}
