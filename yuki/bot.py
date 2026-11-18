@@ -726,9 +726,10 @@ class YukiBot(commands.Bot):
                 idx = next((i for i, l in enumerate(hist) if l is line), len(hist))
                 d = await chime.decide(self.brain.llm, recent=hist[:idx], latest=line, bot_name=s.bot_name,
                                        images=images, attention=attention, context_lines=s.chime_context_lines,
-                                       max_tokens=s.chime_max_tokens)
+                                       max_tokens=s.chime_max_tokens, use_logprobs=s.chime_use_logprobs)
                 tr.lat("decide", d.ms)
-                info.update(decision=d.to_dict(), threshold=self.limits.threshold, images=len(images))
+                info.update(decision=d.to_dict(), threshold=self.limits.threshold, prob=round(d.participate, 3),
+                            prob_source=d.prob_source, images=len(images))
                 info["action"] = "none"
                 if d.error:
                     tr.degrade("chime_failed")

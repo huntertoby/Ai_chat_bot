@@ -24,7 +24,7 @@ from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime
 
-from yuki import chime, throttle
+from yuki import chime, prompts, throttle
 from yuki.brain import Brain
 from yuki.config import load_settings
 from yuki.memory.store import MemoryStore
@@ -34,6 +34,16 @@ from yuki.rag.decompose import Person
 from ._eval_b_common import BOT_NAME, EVAL_DIR, RESULT_DIR, load_jsonl, make_llm, speed, to_line
 
 THRESHOLD = 0.7
+SWEEP = (0.5, 0.6, 0.7, 0.8)  # D-22：離線掃門檻（同一次跑記下機率，門檻在程式外套用）
+USE_LOGPROBS = True
+
+# D-22 規則變體（評估用；只描述標準，不放範例句）。贏了才會寫進 yuki/prompts.py。
+VARIANTS = {
+    "none": "",
+    # 在「不要開口」那段加一條
+    "explain_flow": "- 兩個人正在一來一往解釋事情、話還沒講完：那是他們之間的對話，等講完再說，不要插話。
+",
+}
 
 
 def _images_of(lines: list[ChatLine], n: int = 3) -> list[str]:
@@ -49,7 +59,7 @@ async def run_decide(llm, case: dict, *, attention: bool | None = None, s=None):
     d = await chime.decide(llm, recent=recent, latest=latest, bot_name=BOT_NAME,
                            images=_images_of(recent + [latest]), attention=attention,
                            context_lines=s.chime_context_lines if s else 15,
-                           max_tokens=s.chime_max_tokens if s else 160)
+                           max_tokens=s.chime_max_tokens if s else 160, use_logprobs=USE_LOGPROBS)
     return d, attention
 
 
@@ -76,7 +86,8 @@ async def eval_chime(llm, s, tag: str | None) -> dict:
     pro = [r for r in rows if "pronoun" in r["tags"]]
     loose = sum(((r["pred"] or r["react"]) == r["expect"]) for r in rows) / max(n, 1)
     kinds = Counter((r["expect"], r["pred"]) for r in rows)
-    return {"n": n, "accuracy": round(sum(r["ok"] for r in rows) / max(n, 1), 3),
+    return {"sweep": sweep_chime(rows), "prob_source": dict(Counter(r["decision"].get("prob_source") for r in rows)),
+            "n": n, "accuracy": round(sum(r["ok"] for r in rows) / max(n, 1), 3),
             "accuracy_react_counts": round(loose, 3), "by_label": by,
             "pronoun": {"n": len(pro), "correct": sum(r["ok"] for r in pro), "all_correct": all(r["ok"] for r in pro)},
             "false_positive": kinds[(False, True)], "false_negative": kinds[(True, False)],
@@ -87,6 +98,25 @@ async def eval_chime(llm, s, tag: str | None) -> dict:
                        | {"participate": r["decision"]["participate"], "action": r["decision"]["action"],
                           "kind": r["decision"]["kind"]} for r in rows if not r["ok"]],
             "rows": rows}
+
+
+def sweep_chime(rows: list[dict], thresholds=SWEEP) -> dict:
+    """用記下的機率離線套門檻：不用重跑模型。should_reply 的規則跟 Decision.should_reply 一樣。"""
+    out = {}
+    for th in thresholds:
+        def pred(r, th=th):
+            return chime.Decision(**{k: v for k, v in r["decision"].items()
+                                     if k in ("participate", "action", "prob_source", "error")}).should_reply(th)
+        by = {}
+        for lab in ("talk_to_me", "about_me", "others"):
+            rs = [r for r in rows if r["label"] == lab]
+            by[lab] = round(sum(pred(r) == r["expect"] for r in rs) / max(len(rs), 1), 3)
+        pro = [r for r in rows if "pronoun" in r["tags"]]
+        out[str(th)] = {"accuracy": round(sum(pred(r) == r["expect"] for r in rows) / max(len(rows), 1), 3), "by_label": by,
+                        "pronoun": f"{sum(pred(r) == r['expect'] for r in pro)}/{len(pro)}",
+                        "false_positive": sum(pred(r) and not r["expect"] for r in rows),
+                        "false_negative": sum((not pred(r)) and r["expect"] for r in rows)}
+    return out
 
 
 # ---------------------------------------------------------------- milestone 40 題
@@ -104,7 +134,15 @@ async def eval_milestone(llm, s) -> dict:
     ms = [r for r in rows if r["group"] == "milestone"]
     rp = [r for r in rows if r["group"] == "repost"]
     mi = [r for r in ms if r["image_only"]]
-    return {"milestone_rate": round(sum(r["pred"] for r in ms) / max(len(ms), 1), 3), "milestone_n": len(ms),
+    sweep = {}
+    for th in SWEEP:
+        def pr(r, th=th):
+            dd = r["decision"]
+            return chime.Decision(participate=dd["participate"], action=dd["action"], prob_source=dd["prob_source"],
+                                  error=dd.get("error", "")).should_reply(th)
+        sweep[str(th)] = {"milestone_rate": round(sum(pr(r) for r in ms) / max(len(ms), 1), 3),
+                          "repost_rate": round(sum(pr(r) for r in rp) / max(len(rp), 1), 3)}
+    return {"sweep": sweep, "milestone_rate": round(sum(r["pred"] for r in ms) / max(len(ms), 1), 3), "milestone_n": len(ms),
             "milestone_img_rate": round(sum(r["pred"] for r in mi) / max(len(mi), 1), 3), "milestone_img_n": len(mi),
             "milestone_react_or_reply": round(sum(r["pred"] or r["react"] for r in ms) / max(len(ms), 1), 3),
             "repost_rate": round(sum(r["pred"] for r in rp) / max(len(rp), 1), 3), "repost_n": len(rp),
@@ -200,7 +238,8 @@ async def replay(llm, s, *, reply_sec: float, debounce: float):
             st[f"chime_skip_{reason}"] += 1
             return
         d = await chime.decide(llm, recent=p["recent"], latest=p["line"], bot_name=BOT_NAME, images=[],
-                               attention=att, context_lines=s.chime_context_lines, max_tokens=s.chime_max_tokens)
+                               attention=att, context_lines=s.chime_context_lines, max_tokens=s.chime_max_tokens,
+                               use_logprobs=USE_LOGPROBS)
         st["decide_calls"] += 1
         if d.error:
             st["chime_error"] += 1
@@ -347,7 +386,16 @@ async def main() -> None:
     ap.add_argument("--reply-sec", type=float, default=10.0, help="洗版重播：一次回覆佔用頻道的秒數")
     ap.add_argument("--no-real-replies", action="store_true", help="洗版重播不實際產生 10 則回覆")
     ap.add_argument("--out", default="eval_chime")
+    ap.add_argument("--threshold", type=float, default=THRESHOLD, help="主結果用的門檻（掃描表另外列 0.5~0.8）")
+    ap.add_argument("--no-logprobs", action="store_true", help="不用 logprobs，用模型寫的 participate（舊做法）")
+    ap.add_argument("--variant", choices=list(VARIANTS), default="none", help="D-22 規則變體（只影響本次評估）")
     args = ap.parse_args()
+    global THRESHOLD, USE_LOGPROBS
+    THRESHOLD, USE_LOGPROBS = args.threshold, not args.no_logprobs
+    if VARIANTS[args.variant]:
+        marker = "- 沒內容的反應"
+        assert marker in prompts.CHIME_SYSTEM
+        prompts.CHIME_SYSTEM = prompts.CHIME_SYSTEM.replace(marker, VARIANTS[args.variant] + marker, 1)
     which = args.only or ["chime", "milestone", "flood"]
     s = load_settings()
     llm = make_llm(s)

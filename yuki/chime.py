@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from collections import defaultdict, deque
@@ -49,17 +50,74 @@ class Decision:
     ms: int = 0                    # 這次判斷花的時間（毫秒）
     error: str = ""                # 有值 = 判斷失敗（LLM 錯誤或解析失敗），一律當作不插話
     raw: dict | None = None        # 模型回的原始 JSON
+    # D-22：participate 的來源。"logprob" = 從 action 那個位置的 token 機率算出（participate 就是開口機率）；
+    # "participate" = 拿不到 logprobs，退回模型自己寫的數字。
+    prob_source: str = "participate"
+    model_participate: float = 0.0  # 模型自己寫的 participate（logprob 來源時只留作參考）
 
     def should_reply(self, threshold: float) -> bool:
-        return not self.error and self.action == "reply" and self.participate >= threshold
+        if self.error:
+            return False
+        if self.prob_source == "logprob":  # 機率本身就是「開口」的機率，不再看模型寫的 action
+            return self.participate >= threshold
+        return self.action == "reply" and self.participate >= threshold
 
     def should_react(self, threshold: float) -> bool:
-        return not self.error and self.action == "react" and bool(self.emoji) and self.participate >= threshold
+        if self.error or self.action != "react" or not self.emoji:
+            return False
+        if self.prob_source == "logprob":  # participate 是開口機率，不適用於按表情（模型選了 react 就算）
+            return True
+        return self.participate >= threshold
 
     def to_dict(self) -> dict:
         return {"participate": self.participate, "action": self.action, "emoji": self.emoji, "kind": self.kind,
                 "reason": self.reason, "need_background": self.need_background, "ms": self.ms,
+                "prob_source": self.prob_source, "model_participate": self.model_participate,
                 **({"error": self.error} if self.error else {})}
+
+
+# ---------- D-22：從 logprobs 算開口機率 ----------
+OPEN_ACTIONS = ("reply",)
+CLOSED_ACTIONS = ("react", "none")
+_ACTION_VALUE = re.compile(r'"action"\s*:\s*"')
+
+
+def _norm(tok: str) -> str:
+    return tok.strip().strip("\"'`").strip().lower()
+
+
+def action_prob(content: list[dict] | None) -> float | None:
+    """輸出 JSON 裡 action 的值那個 token，top_logprobs 裡「開口」類的機率和 ÷（開口＋不開口的機率和）。
+    找不到那個位置、或前幾名裡完全沒有 action 的選項，回 None（呼叫端退回模型寫的 participate）。
+    LM Studio 回的 content 是每個輸出 token 一筆：{"token", "logprob", "top_logprobs": [{"token", "logprob"}, ...]}。"""
+    if not content:
+        return None
+    try:
+        toks = [str(t.get("token", "")) for t in content]
+        text = "".join(toks)
+        m = _ACTION_VALUE.search(text)
+        if not m:
+            return None
+        pos, idx = 0, None
+        for i, tk in enumerate(toks):  # 值的第一個字元所在的 token
+            if pos + len(tk) > m.end():
+                idx = i
+                break
+            pos += len(tk)
+        if idx is None:
+            return None
+        p_open = p_closed = 0.0
+        for alt in content[idx].get("top_logprobs") or []:
+            name = _norm(str(alt.get("token", "")))
+            pr = math.exp(float(alt.get("logprob", -1e9)))
+            if name in OPEN_ACTIONS:
+                p_open += pr
+            elif name in CLOSED_ACTIONS:
+                p_closed += pr
+        total = p_open + p_closed
+        return None if total <= 0 else p_open / total
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def parse_decision(raw: dict | None) -> Decision:
@@ -98,8 +156,11 @@ def _line_text(line: ChatLine, bot_name: str) -> str:
 
 
 async def decide(llm, *, recent: list[ChatLine], latest: ChatLine, bot_name: str, images: Iterable[str] = (),
-                 attention: bool = False, context_lines: int = CONTEXT_LINES, max_tokens: int = 160) -> Decision:
+                 attention: bool = False, context_lines: int = CONTEXT_LINES, max_tokens: int = 160,
+                 use_logprobs: bool = True) -> Decision:
     """插話判斷（一次短的 LLM 呼叫，JSON schema、不思考）。
+    use_logprobs（D-22）：開口機率從 action 那個位置的 token 機率算（Decision.prob_source="logprob"）；
+    拿不到 logprobs 就退回模型寫的 participate（prob_source="participate"）。
 
     recent：最新那則「之前」的對話（舊到新，內部只取最後 context_lines 則）；latest：要判斷的那則；
     images：最近幾則裡的圖（data URL，低解析度，最多幾張由呼叫端決定）；attention：她剛講過話，提示模型這則比較可能是在接她的話。
@@ -107,13 +168,23 @@ async def decide(llm, *, recent: list[ChatLine], latest: ChatLine, bot_name: str
     門檻和次數限制不在這裡：呼叫端用 `Decision.should_reply(threshold)` 和 `ChimeLimits` 決定。"""
     messages = build_messages(recent, latest, bot_name, images, attention, context_lines)
     t0 = time.monotonic()
+    lp = None
     try:
-        raw = await llm.chat_json(messages, prompts.CHIME_SCHEMA, name="chime", temperature=0.0,
-                                  max_tokens=max_tokens, reasoning_effort="none")
+        if use_logprobs and hasattr(llm, "chat_json_logprobs"):
+            raw, lp = await llm.chat_json_logprobs(messages, prompts.CHIME_SCHEMA, name="chime", temperature=0.0,
+                                                   max_tokens=max_tokens)
+        else:
+            raw = await llm.chat_json(messages, prompts.CHIME_SCHEMA, name="chime", temperature=0.0,
+                                      max_tokens=max_tokens, reasoning_effort="none")
     except LLMError as e:
         d = Decision(error=f"llm: {e}"[:200])
     else:
         d = parse_decision(raw)
+        if not d.error and use_logprobs:
+            p = action_prob(lp)
+            d.model_participate = d.participate
+            if p is not None:
+                d.participate, d.prob_source = p, "logprob"
     d.ms = round((time.monotonic() - t0) * 1000)
     return d
 
