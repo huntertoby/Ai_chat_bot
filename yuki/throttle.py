@@ -60,10 +60,25 @@ def is_command(text: str) -> bool:
 _MENTION_ID = re.compile(r"<@[!&]?\d+>")
 
 
+_LAUGH_CHARS = frozenset("哈呵嘻wWhH草")  # 笑聲、草、www：重複是正常說話
+
+
+def _is_char_flood(content: str, repeat_chars: int) -> bool:
+    """同一個字連續 ≥ repeat_chars 次，而且拿掉這些重複段之後幾乎沒剩內容（≤ 2 字）才算洗版。
+    標點、符號、數字、笑聲（哈、w）的重複不算；「我考上了！！！！！！！！！！」「10000000000」都不是洗版。"""
+    runs = list(re.finditer(r"(\S)\1{%d,}" % (repeat_chars - 1), content))
+    if not runs:
+        return False
+    if all(unicodedata.category(m.group(1))[0] in "PSNZC" or m.group(1) in _LAUGH_CHARS for m in runs):
+        return False
+    rest = re.sub(r"(\S)\1{%d,}" % (repeat_chars - 1), "", _MENTION_ID.sub("", content))
+    return len(strip_decor(rest)) <= 2
+
+
 def is_flood(content: str, *, repeat_chars: int = 10, repeat_mentions: int = 3) -> bool:
     """大量重複：同一個非空白字元連續 ≥ repeat_chars 次，或同一個人／身分組在同一則裡被 @ ≥ repeat_mentions 次。
     `content` 要是原始內容（含 <@id>），不是 clean_content。"""
-    if repeat_chars > 1 and re.search(r"(\S)\1{%d,}" % (repeat_chars - 1), content or ""):
+    if repeat_chars > 1 and _is_char_flood(content or "", repeat_chars):
         return True
     if repeat_mentions > 1:
         counts = Counter(_MENTION_ID.findall(content or ""))

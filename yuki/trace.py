@@ -70,9 +70,48 @@ def current_id() -> str:
 
 
 def start(kind: str, *, guild: str = "", channel: str = "", trigger: str = "",
-          user_ids: Iterable[str] = ()) -> "Trace":
+          user_ids: Iterable[str] = (), keep_prompts: bool = True) -> "Trace":
+    """keep_prompts=False：不記送給模型的 messages（插話判斷只記判斷結果）。"""
     return Trace(kind, guild=str(guild), channel=str(channel), trigger=trigger,
-                 user_ids=[str(u) for u in user_ids])
+                 user_ids=[str(u) for u in user_ids], keep_prompts=keep_prompts)
+
+
+HIDDEN = "[已隱藏]"
+
+
+def hidden_strings(lines: Iterable[Any], hidden_ids: Iterable[str], people: Iterable[Any] = ()) -> list[str]:
+    """退出紀錄（/不要記我）的人：算出寫進追蹤前要從文字裡拿掉的字串（長的在前）。
+    lines 是 ChatLine 類的物件（author.id/name、text、reply_to、render_chat）。
+    包含：他們的那幾則（整行）、別人回覆他們時引用的片段、他們的名字。"""
+    hidden = {str(i) for i in hidden_ids}
+    if not hidden:
+        return []
+    lines = list(lines)
+    names = {l.author.name for l in lines if str(l.author.id) in hidden and getattr(l.author, "name", "")}
+    names |= {p.name for p in people if str(p.id) in hidden and getattr(p, "name", "")}  # 例如被回覆的人
+    out: set[str] = set()
+    for l in lines:
+        if str(l.author.id) in hidden:
+            out.update({l.render_chat(), l.render(), l.text.strip()} - {""})
+        ref = getattr(l, "reply_to", None)
+        if ref is not None and not ref.is_bot and ref.name in names and ref.snippet:
+            out.add(ref.render())
+            out.add(" ".join(ref.snippet.split())[:40])
+    out = {x for x in out if len(x) >= 2}  # 太短的字串（「好」）全面取代會誤傷，整行格式已經涵蓋
+    return sorted(out, key=len, reverse=True) + sorted(names, key=len, reverse=True)
+
+
+def _scrub(obj: Any, hide: list[str]) -> Any:
+    if isinstance(obj, str):
+        for h in hide:
+            if h in obj:
+                obj = obj.replace(h, HIDDEN)
+        return obj
+    if isinstance(obj, list):
+        return [_scrub(x, hide) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _scrub(v, hide) for k, v in obj.items()}
+    return obj
 
 
 def _jsonable(o: Any) -> Any:
@@ -81,7 +120,10 @@ def _jsonable(o: Any) -> Any:
 
 class Trace:
     def __init__(self, kind: str, *, guild: str = "", channel: str = "", trigger: str = "",
-                 user_ids: list[str] | None = None):
+                 user_ids: list[str] | None = None, keep_prompts: bool = True):
+        self.keep_prompts = keep_prompts
+        self.hide: list[str] = []  # 寫檔前要從所有文字拿掉的字串（hidden_strings）
+        self.hide_fn: Callable[[], list[str]] | None = None  # 寫檔當下才算（回覆對象是事後補的）；算失敗就整筆不寫
         self.trace_id = uuid.uuid4().hex[:8]
         self.kind = kind
         self.guild = guild
@@ -101,7 +143,7 @@ class Trace:
 
     # ---- 記錄 ----
     def add_attempt(self, messages: list, response: Any, ms: float, error: str | None = None) -> None:
-        self.attempts.append({"messages": vision.redact(messages), "response": response, "ms": round(ms),
+        self.attempts.append({"messages": vision.redact(messages) if self.keep_prompts else [], "response": response, "ms": round(ms),
                               "tools": [], **({"error": error} if error else {})})
 
     def add_tool(self, name: str, args: Any, result: str) -> None:
@@ -160,7 +202,15 @@ class Trace:
             return
         _maybe_prune()
         cfg.log_dir.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(self.to_record(), ensure_ascii=False, default=_jsonable)
+        hide = list(self.hide)
+        if self.hide_fn is not None:
+            try:
+                hide += self.hide_fn()
+            except Exception as e:  # 算不出要隱藏什麼：寧可不寫
+                log.warning("trace_id=%s 隱私過濾失敗，整筆不寫：%r", self.trace_id, e)
+                return
+        rec = _scrub(self.to_record(), hide) if hide else self.to_record()
+        line = json.dumps(rec, ensure_ascii=False, default=_jsonable)
         path = cfg.log_dir / f"ai-{cfg.clock().date().isoformat()}.jsonl"
         with path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")

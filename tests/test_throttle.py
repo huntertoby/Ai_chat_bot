@@ -52,7 +52,7 @@ def test_command_detection():
 # ---- 大量重複 ----
 def test_flood_repeated_chars():
     assert is_flood("a" * 10)
-    assert is_flood("哈" * 12 + "好")
+    assert not is_flood("哈" * 12 + "好")  # 笑聲重複不算洗版
     assert not is_flood("哈" * 9)
     assert not is_flood("a b " * 20)  # 不連續
     assert is_flood("x" * 5, repeat_chars=5)

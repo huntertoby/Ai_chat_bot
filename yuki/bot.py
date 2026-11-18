@@ -105,7 +105,8 @@ class YukiBot(commands.Bot):
         logging.getLogger().addHandler(alert.AlertLogHandler(self.alerter))
         self._health_task: asyncio.Task | None = None
         self.brain = Brain.build(settings)
-        self.active_until: dict[int, float] = {}
+        self.active_until: dict[int, float] = {}   # 被叫到之後的注意模式
+        self.chime_until: dict[int, float] = {}    # 她自己插話之後的注意時間（只影響閉嘴判斷和插話的 attention 提示）
         self._members: dict[int, list[Person]] = {}
         self._wake = re.compile("|".join(re.escape(w) for w in settings.wake_words), re.IGNORECASE)
         self._synced = False
@@ -456,10 +457,6 @@ class YukiBot(commands.Bot):
         s = self.settings
         if message.author.bot or message.webhook_id:  # bot（包括 Luna）一律不理，C4 才做互動
             return
-        if throttle.is_flood(message.content, repeat_chars=s.flood_repeat_chars,
-                             repeat_mentions=s.flood_repeat_mentions):
-            log.info("大量重複的訊息，不回、不進記憶")
-            return
         self._last_activity = time.monotonic()
         test = self.is_test_guild(message.guild)
         if not test:
@@ -467,6 +464,10 @@ class YukiBot(commands.Bot):
                 self.sync.record(message)
             except Exception:
                 log.exception("訊息存進封存區失敗")
+        if throttle.is_flood(message.content, repeat_chars=s.flood_repeat_chars,
+                             repeat_mentions=s.flood_repeat_mentions):
+            log.info("大量重複的訊息，不回、不進記憶（封存照常）")
+            return
         if message.type not in (discord.MessageType.default, discord.MessageType.reply):
             return  # 加入、置頂、加成之類的系統訊息
         if throttle.is_command(message.content):
@@ -478,10 +479,11 @@ class YukiBot(commands.Bot):
         mentions = [person(u) for u in message.mentions if u != self.user and not u.bot]
         now = time.monotonic()
         active = self.active_until.get(cid, 0) > now
+        chiming = self.chime_until.get(cid, 0) > now  # 她剛自己插過話，大家可能在回她
         called = self.is_called(message)
 
         # 對她說「閉嘴」「沒問你」：這個頻道一陣子不主動插話（被叫仍回）
-        if (called or active) and chime.is_shush(message.content):
+        if (called or active or chiming) and chime.is_shush(message.content):
             self.limits.mute(cid)
             log.info("被叫閉嘴，頻道 %s 在 %.0f 分鐘內不主動插話", cid, s.chime_mute_minutes)
 
@@ -490,7 +492,7 @@ class YukiBot(commands.Bot):
             await message.reply("好的，我先去旁邊休息囉！有事再叫我～", mention_author=False)
             return
 
-        if s.vision_enabled and called:
+        if s.vision_enabled and (called or active):
             await vision.wait_for_embeds(message)  # 連結預覽是 Discord 事後補上的（訊息編輯），等一下
         images = vision.image_urls(message) if s.vision_enabled else []
         if images and not text:
@@ -500,7 +502,7 @@ class YukiBot(commands.Bot):
             reply_to, reply_id = self.reply_ref(message)
             line = ChatLine(author, text, images=images, msg_id=str(message.id), reply_to=reply_to,
                             reply_id=reply_id)
-            if self.brain.observe(channel_key, line) and (called or (s.passive_enabled and not test)):
+            if self.brain.observe(channel_key, line) and (called or active or (s.passive_enabled and not test)):
                 self.brain.buffer(gid, channel_key, line, mentions)
 
         if called:
@@ -509,14 +511,16 @@ class YukiBot(commands.Bot):
             return
         if message.guild is not None and not self.chime_allowed(message.guild):
             # 還沒開插話的伺服器（預設＝測試伺服器以外，例如主伺服器）：維持舊行為，注意模式內照樣回
-            if active and line is not None and not throttle.is_noise_text(text, s.noise_max_chars):
+            if (active and line is not None and not throttle.is_noise_text(text, s.noise_max_chars)
+                    and not self.throttle.tag_cooling(author.id)):  # 洗版冷卻中的人，注意模式也不回
                 await self._on_called(message, author, text, mentions, count_tag=False)
             return
         # 沒被叫到：先過雜訊過濾，再排進插話判斷（注意模式只是多一個提示，不是必回）
         if (line is None or not self.limits.enabled or message.guild is None
-                or throttle.is_noise_text(text, s.noise_max_chars)):
+                or throttle.is_noise_text(text, s.noise_max_chars)
+                or self.throttle.tag_cooling(author.id)):
             return
-        self._schedule_chime(message, line, attention=active)
+        self._schedule_chime(message, line, attention=active or chiming)
 
     # ---------- 被叫到：節流、排隊、回覆 ----------
     async def _on_called(self, message: discord.Message, author: Person, text: str, mentions: list[Person],
@@ -539,11 +543,34 @@ class YukiBot(commands.Bot):
         """呼叫端已經 try_start 成功。回完一則後，把排隊期間被叫的訊息合成一次回覆。"""
         try:
             while turn is not None:
-                await self._respond(turn)
+                try:
+                    await self._respond(turn)
+                except Exception:  # 例如 reply 時原訊息被刪：記下來，排隊的那幾則照樣處理
+                    log.exception("回覆失敗，繼續處理排隊的訊息")
                 turn = Turn.merge(self.throttle.drain(cid))
         finally:
-            self.throttle.drain(cid)
             self.throttle.finish(cid)
+
+    def _optout_among(self, ids) -> set[str]:
+        ids = sorted({str(i) for i in ids})
+        if not ids:
+            return set()
+        marks = ",".join("?" * len(ids))
+        return {r[0] for r in self.archive.db.execute(f"SELECT user_id FROM optout WHERE user_id IN ({marks})", ids)}
+
+    def _hide_optouts(self, tr, channel_key: str, people: list[Person]) -> None:
+        """追蹤紀錄寫檔前，把 /不要記我 的人的訊息（和別人引用他們的片段、名字）拿掉。"""
+        def compute() -> list[str]:
+            lines = list(self.brain.history.get(channel_key, ()))
+            ids = {l.author.id for l in lines if not l.is_bot} | {p.id for p in people}
+            return trace.hidden_strings(lines, self._optout_among(ids), people)
+        tr.hide_fn = compute
+
+    @staticmethod
+    def _replied_person(message) -> list[Person]:
+        ref = getattr(getattr(message, "reference", None), "resolved", None)
+        a = getattr(ref, "author", None)
+        return [person(a)] if a is not None and not getattr(a, "bot", False) else []
 
     async def _respond(self, turn: Turn) -> bool:
         message, author, mentions = turn.message, turn.author, turn.mentions
@@ -555,6 +582,7 @@ class YukiBot(commands.Bot):
         self._replying += 1
         tr = trace.start("reply", guild=message.guild.id if message.guild else "", channel=cid,
                          trigger=turn.trigger, user_ids=[author.id, *(m.id for m in mentions)])
+        self._hide_optouts(tr, channel_key, self._replied_person(message))
         try:
             async with tr:
                 async with message.channel.typing():
@@ -586,6 +614,8 @@ class YukiBot(commands.Bot):
                 await message.reply(chunk, mention_author=False)
             else:
                 await message.channel.send(chunk)
+        if turn.chimed:  # 自己插話成功：開一段注意時間，對方接話（沒用回覆功能）也算接她的話
+            self.chime_until[cid] = time.monotonic() + s.attention_timeout
         bot_line = ChatLine(person(self.user), reply, is_bot=True)
         self.brain.observe(channel_key, bot_line)
         self.brain.buffer(gid, channel_key, bot_line)
@@ -630,7 +660,9 @@ class YukiBot(commands.Bot):
         info: dict = {"attention": attention}
         turn: Turn | None = None
         tr = trace.start("chime", guild=message.guild.id if message.guild else "", channel=cid,
-                         trigger="attention" if attention else "idle", user_ids=[uid])
+                         trigger="attention" if attention else "idle", user_ids=[uid],
+                         keep_prompts=False)  # 插話判斷每則都會寫一筆：只記判斷結果，不記帶著別人對話的 messages
+        self._hide_optouts(tr, channel_key, self._replied_person(message))
         async with tr:
             def skip(reason: str) -> None:
                 tr.outcome = "skipped"
@@ -657,6 +689,11 @@ class YukiBot(commands.Bot):
                 except Exception:
                     log.warning("插話判斷取圖失敗，只用文字", exc_info=True)
                     images = []
+                if self._replying > 0 or chime.llm_is_busy(self.brain.llm):
+                    # 補抓回覆對象、下載圖片的這段時間，LM Studio 可能已經被別人佔住：再檢查一次
+                    skip("llm_busy")
+                    tr.final = json.dumps(info, ensure_ascii=False)
+                    return None
                 idx = next((i for i, l in enumerate(hist) if l is line), len(hist))
                 d = await chime.decide(self.brain.llm, recent=hist[:idx], latest=line, bot_name=s.bot_name,
                                        images=images, attention=attention, context_lines=s.chime_context_lines,

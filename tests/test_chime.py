@@ -395,6 +395,12 @@ def fake_bot(llm, *, level=1, replying=0, history=(), **settings):
     async def noop(channel):
         return None
 
+    import sqlite3
+    me.archive = NS(db=sqlite3.connect(":memory:"))
+    me.archive.db.execute("CREATE TABLE optout (guild_id TEXT, user_id TEXT)")
+    me._optout_among = lambda ids: botmod.YukiBot._optout_among(me, ids)
+    me._hide_optouts = lambda tr, ck, people: botmod.YukiBot._hide_optouts(me, tr, ck, people)
+    me._replied_person = botmod.YukiBot._replied_person
     me._fill_reply_refs = noop
     me.chime = lambda message, line, attention: botmod.YukiBot._chime(me, message, line, attention)
     return me, clk
