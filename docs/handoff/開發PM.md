@@ -17,6 +17,7 @@
 
 ## 現況（最後更新：2026-11-19）
 - 進行中：階段 B 完成、等使用者審查（`docs/stages/B-報告.md`，已 push 到 4aeaf0f 之後）。審查後帶使用者在測試伺服器實測 4 項，再開始一週試跑。未達標：插話正確率 78%（85%）、第三人稱自稱 1/10、真實 80 題退步（不是 B4 規則造成，原因待查）。熱鬧模式預設 4 次／90 秒（規格 5／30 壓不下來）。
+- D-22（logprobs 機率＋門檻）做完：可行但沒變準（仍 78%），`CHIME_USE_LOGPROBS` 預設關、行為不變；報告 `docs/stages/B-D22-報告.md`。剩下的錯是「別人在講她但不是對她說」，模型很確定（0.9～1.0），調門檻救不了；要再推得改判斷流程，等總 PM／使用者決定。
 - 插話只在 `CHIME_GUILD_IDS`（空＝只有測試伺服器）；主伺服器維持舊行為。
 - 評估腳本：`scripts/eval_chime.py`（--only chime|milestone|flood）、`scripts/eval_background.py`；資料與結果在 `data/eval_b/`（不進 repo）。
 - A5 接受 80%（D-21）。A3 待補測（D-20）。A1 暫停中（使用者要求先拿掉捷徑；還原跑 `scripts/autostart/install.ps1`）。
