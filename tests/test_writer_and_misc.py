@@ -105,3 +105,19 @@ def test_split_message():
     chunks = split_message("a" * 4000)
     assert all(len(c) <= 1900 for c in chunks) and "".join(chunks) == "a" * 4000
     assert split_message("短訊息") == ["短訊息"]
+
+
+def test_is_called_by_bot_managed_role_mention():
+    """在輸入框選到 bot 的身分組「@Yuki」也算叫她；別的身分組不算。"""
+    import re
+    from types import SimpleNamespace as NS
+    from yuki.bot import YukiBot
+    bot_role = NS(is_bot_managed=lambda: True)
+    other = NS(is_bot_managed=lambda: False)
+    me = NS(roles=[bot_role, other])
+    fake = NS(user=object(), _wake=re.compile(r"(?!x)x"))
+    def msg(roles):
+        return NS(guild=NS(me=me), mentions=[], role_mentions=roles, content="<@&1> 看這個", reference=None)
+    assert YukiBot.is_called(fake, msg([bot_role]))
+    assert not YukiBot.is_called(fake, msg([other]))
+    assert not YukiBot.is_called(fake, msg([]))

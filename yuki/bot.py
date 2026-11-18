@@ -373,6 +373,10 @@ class YukiBot(commands.Bot):
     def is_called(self, message: discord.Message) -> bool:
         if message.guild is None or self.user in message.mentions:
             return True
+        me = message.guild.me
+        # 在輸入框選到的「@Yuki」可能是 Discord 幫 bot 建的身分組，不是 bot 本人
+        if me and any(r.is_bot_managed() and r in me.roles for r in message.role_mentions):
+            return True
         if self._wake.search(message.content):
             return True
         ref = message.reference.resolved if message.reference else None
