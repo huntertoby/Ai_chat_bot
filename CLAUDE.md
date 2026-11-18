@@ -27,6 +27,8 @@ Discord 聊天機器人 Yuki，全部在本機跑（LM Studio、Qwen3-ASR、Bree
 - BreezyVoice 在 WSL：`~/BreezyVoice/.venv`，跑 `scripts/breezy_server.py`，埠 8890。
 - LM Studio 埠 8001，**一次只能處理一個請求**；跑評估時 Yuki 也在用它，會互相拖慢。
 - 只結束自己啟動的 Yuki／BreezyVoice 程序。
+- 開機自動啟動（啟動資料夾捷徑，D-15）：腳本在 `scripts/autostart/`，log 在 `logs/autostart.log`。
+  自動開的 Yuki／BreezyVoice 算使用者的；開發時要自己開 Yuki，先跑 `stop.ps1`，測完再 `start.ps1` 還原。
 
 ## 隱私（repo 是公開的：github.com/huntertoby/Ai_chat_bot）
 - **不能進 repo**：朋友的真名、暱稱、學校、個人經歷、Discord ID、`.env`、`data/`、`logs/`、

@@ -107,6 +107,22 @@ eval/                      評估題目（合成資料）
    python main.py
    ```
 
+### 開機自動啟動（Windows，選用）
+
+用「啟動資料夾捷徑」在登入 Windows 後自動開 BreezyVoice（WSL）和 Yuki；掛掉會 10 秒後重開（1 小時內重開超過 5 次就停，看 log）。
+LM Studio 和 SearXNG 不包含在內，要自己設定開機啟動。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\autostart\install.ps1     # 在啟動資料夾建立捷徑
+powershell -ExecutionPolicy Bypass -File scripts\autostart\uninstall.ps1   # 移除捷徑
+powershell -ExecutionPolicy Bypass -File scripts\autostart\start.ps1       # 手動啟動（不跳視窗；已在跑的不會重複開）
+powershell -ExecutionPolicy Bypass -File scripts\autostart\stop.ps1        # 手動停止（只結束腳本自己開的程序）
+```
+
+- log：`logs/autostart.log`（看顧程式）、`logs/yuki.log`、`logs/breezy.log`；程序編號記在 `logs/autostart/*.pid`。
+- 要自己開 Yuki 做開發前，先跑 `stop.ps1`，做完再 `start.ps1`。
+- BreezyVoice 的 WSL 發行版（預設 `swift`）在 `scripts/autostart/common.ps1` 最上面改。
+
 ### 語音（選用）
 
 - `.env` 設 `VOICE_ENABLED=true`、`VOICE_GUILD_IDS`、`VOICE_LISTEN_USERS`（只聽這些人，其他人的聲音不轉文字也不存）。
