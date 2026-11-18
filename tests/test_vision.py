@@ -162,3 +162,14 @@ def test_trace_has_no_base64(tmp_path):
     assert rec["images"] == 1 and rec["image_sources"] == [{"msg_id": "7"}]
     content = rec["attempts"][0]["messages"][0]["content"]
     assert {"type": "text", "text": "[圖片]"} in content
+
+
+def test_brain_collect_images_end_to_end():
+    """回歸：B1 實測時 brain 傳了 collect 不收的參數，整段被 except 吃掉、0 張圖。這裡走 brain 那一層。"""
+    from yuki.brain import Brain
+    settings = NS(vision_enabled=True, vision_max_images=5, vision_reply_long_side=1280,
+                  vision_recent_lines=10, vision_max_mb=10)
+    fake = NS(settings=settings, _img_http=client(lambda req: httpx.Response(200, content=png(800, 600))))
+    items = run(Brain.collect_images(fake, history([1, 1])))
+    assert len(items) == 2 and all(d.startswith("data:image/jpeg;base64,") for _, d in items)
+    assert run(Brain.collect_images(fake, history([1, 1]), spoken=True)) == []

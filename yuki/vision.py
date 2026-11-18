@@ -120,13 +120,13 @@ def pick(lines: Iterable[Any], n: int, recent: int = RECENT_LINES) -> list[tuple
 
 
 async def collect(lines: Iterable[Any], *, n: int = REPLY_MAX_IMAGES, long_side: int = REPLY_LONG_SIDE,
-                  recent: int = RECENT_LINES, client: httpx.AsyncClient | None = None
-                  ) -> list[tuple[Any, str]]:
+                  recent: int = RECENT_LINES, client: httpx.AsyncClient | None = None,
+                  max_bytes: int = MAX_BYTES) -> list[tuple[Any, str]]:
     """挑圖並下載；回傳 [(訊息, data URL)]，舊到新（對話順序）。下載失敗的略過。"""
     picked = pick(lines, n, recent)
     if not picked:
         return []
-    data = await asyncio.gather(*(fetch_image(u, long_side, client=client) for _, u in picked))
+    data = await asyncio.gather(*(fetch_image(u, long_side, client=client, max_bytes=max_bytes) for _, u in picked))
     got = [(line, d) for (line, _), d in zip(picked, data) if d]
     got.reverse()
     return got
