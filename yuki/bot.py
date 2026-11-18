@@ -113,7 +113,10 @@ class YukiBot(commands.Bot):
         # B3 節流、B2 插話判斷的硬限制
         self.throttle = throttle.Throttle(throttle.ThrottleConfig(
             cooldown_sec=settings.throttle_cooldown_sec, tag_limit=settings.throttle_tag_limit,
-            tag_window_sec=settings.throttle_tag_window_sec, tag_cooldown_sec=settings.throttle_tag_cooldown_sec))
+            tag_window_sec=settings.throttle_tag_window_sec, tag_cooldown_sec=settings.throttle_tag_cooldown_sec,
+            channel_call_burst=settings.channel_call_burst, channel_call_window_sec=settings.channel_call_window_sec,
+            channel_burst_mode_sec=settings.channel_burst_mode_sec, channel_call_gap_sec=settings.channel_call_gap_sec))
+        self._flush_tasks: dict[int, asyncio.Task] = {}
         self.limits = chime.ChimeLimits(settings.chime_in, threshold=settings.chime_threshold,
                                         mute_sec=settings.chime_mute_minutes * 60,
                                         react_max=settings.chime_react_max,
@@ -534,6 +537,11 @@ class YukiBot(commands.Bot):
             await message.reply("找我有事嗎？", mention_author=False)
             return
         turn = Turn(message, author, text, mentions, trigger="called")
+        if not self.throttle.note_call(cid):  # 熱鬧模式：先收集，離上次回覆滿 gap 秒再合成一次回
+            self.throttle.enqueue(cid, turn)
+            if not self.throttle.is_busy(cid):
+                self._schedule_flush(cid)
+            return
         if not self.throttle.try_start(cid):
             self.throttle.enqueue(cid, turn)  # 這個頻道正在回覆：等它回完，排隊的合成一次回
             return
@@ -547,9 +555,29 @@ class YukiBot(commands.Bot):
                     await self._respond(turn)
                 except Exception:  # 例如 reply 時原訊息被刪：記下來，排隊的那幾則照樣處理
                     log.exception("回覆失敗，繼續處理排隊的訊息")
-                turn = Turn.merge(self.throttle.drain(cid))
+                turn = Turn.merge(self.throttle.drain_ready(cid))
         finally:
             self.throttle.finish(cid)
+        if self.throttle.ready_in(cid) is not None:
+            self._schedule_flush(cid)  # 熱鬧模式還有收集到的叫她：等到下一次可回的時間
+
+    def _schedule_flush(self, cid: int) -> None:
+        if cid in self._flush_tasks:
+            return
+        self._flush_tasks[cid] = self.loop.create_task(self._flush_later(cid))
+
+    async def _flush_later(self, cid: int) -> None:
+        try:
+            delay = self.throttle.ready_in(cid)
+            if delay:
+                await asyncio.sleep(delay)
+        finally:
+            self._flush_tasks.pop(cid, None)
+        if self.throttle.ready_in(cid) != 0.0 or not self.throttle.try_start(cid):
+            if self.throttle.ready_in(cid) is not None and not self.throttle.is_busy(cid):
+                self._schedule_flush(cid)
+            return  # 忙碌中：回完之後 _run_turns 會處理
+        await self._run_turns(cid, Turn.merge(self.throttle.drain(cid)))
 
     def _optout_among(self, ids) -> set[str]:
         ids = sorted({str(i) for i in ids})

@@ -103,6 +103,11 @@ class ThrottleConfig:
     tag_window_sec: float = 60.0
     tag_cooldown_sec: float = 120.0  # 洗版的人冷卻多久
     queue_max: int = 8               # 每頻道排隊上限（超過丟最舊的）
+    # 頻道層級（多人輪流叫她）：window 秒內被叫 ≥ burst 次 → 熱鬧模式 mode_sec 秒，期間最多每 gap 秒回一次
+    channel_call_burst: int = 5
+    channel_call_window_sec: float = 60.0
+    channel_burst_mode_sec: float = 120.0
+    channel_call_gap_sec: float = 30.0
 
 
 class Throttle:
@@ -114,12 +119,16 @@ class Throttle:
         self._last_done: dict[Any, float] = {}
         self._tags: dict[Any, deque[float]] = defaultdict(deque)
         self._tag_until: dict[Any, float] = {}
+        self._calls: dict[Any, deque[float]] = defaultdict(deque)
+        self._mode_until: dict[Any, float] = {}
+        self._next_ok: dict[Any, float] = {}
 
     # ---- 每頻道同時只處理一則 ----
     def try_start(self, channel: Any) -> bool:
         if channel in self._busy:
             return False
         self._busy.add(channel)
+        self._mark_reply(channel)
         return True
 
     def finish(self, channel: Any) -> None:
@@ -138,6 +147,46 @@ class Throttle:
 
     def drain(self, channel: Any) -> list[Any]:
         return self._queue.pop(channel, [])
+
+    # ---- 頻道層級：多人輪流叫她 → 熱鬧模式 ----
+    def in_burst(self, channel: Any) -> bool:
+        return self._mode_until.get(channel, 0) > self._clock()
+
+    def _mark_reply(self, channel: Any) -> None:
+        if self.in_burst(channel):
+            self._next_ok[channel] = self._clock() + self.cfg.channel_call_gap_sec
+
+    def note_call(self, channel: Any) -> bool:
+        """頻道被叫一次（單人 tag 限制通過後呼叫）。回傳 True = 照常處理；False = 熱鬧模式中、離上次回覆不到
+        gap 秒：呼叫端要把這則排進佇列，等 `ready_in` 秒後一起回。熱鬧模式中仍被叫會延長模式。"""
+        now = self._clock()
+        q = self._calls[channel]
+        q.append(now)
+        while q and now - q[0] > self.cfg.channel_call_window_sec:
+            q.popleft()
+        if self.in_burst(channel):
+            self._mode_until[channel] = now + self.cfg.channel_burst_mode_sec
+        elif len(q) >= self.cfg.channel_call_burst:
+            self._mode_until[channel] = now + self.cfg.channel_burst_mode_sec
+            q.clear()
+        return not self.in_burst(channel) or now >= self._next_ok.get(channel, 0)
+
+    def ready_in(self, channel: Any) -> float | None:
+        """排隊中的叫她內容還要等幾秒才能合成回覆；沒有排隊回 None。"""
+        if not self._queue.get(channel):
+            return None
+        if not self.in_burst(channel):
+            return 0.0
+        return max(0.0, self._next_ok.get(channel, 0) - self._clock())
+
+    def drain_ready(self, channel: Any) -> list[Any]:
+        """熱鬧模式中還沒到下一次可回的時間就不取（留在佇列）；其餘同 drain。取出時記下回覆時間。"""
+        if self.ready_in(channel):
+            return []
+        items = self.drain(channel)
+        if items:
+            self._mark_reply(channel)
+        return items
 
     def drop_queued(self, channel: Any, pred: Callable[[Any], bool]) -> int:
         """把排隊中符合條件的丟掉（tag 洗版的人）；回傳丟了幾個。"""

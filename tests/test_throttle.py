@@ -153,3 +153,70 @@ def test_tag_window_slides_and_users_are_independent():
         clk.t += 25  # 每 25 秒一次，60 秒窗口內最多 3 次
     assert th.note_tag("u1")
     assert th.note_tag("u2")
+
+
+# ---- 頻道層級熱鬧模式 ----
+def _burst_throttle():
+    clock = Clock()
+    th = Throttle(ThrottleConfig(channel_call_burst=5, channel_call_window_sec=60, channel_burst_mode_sec=120,
+                                 channel_call_gap_sec=30), clock=clock)
+    return th, clock
+
+
+def _call_round_robin(th, clock, n, step=2.0):
+    out = []
+    for i in range(n):
+        out.append(th.note_call("c"))
+        clock.t += step
+    return out
+
+
+def test_burst_triggered_by_many_people_taking_turns():
+    th, clock = _burst_throttle()
+    assert all(_call_round_robin(th, clock, 4))      # 前 4 次照常
+    assert not th.in_burst("c")
+    assert th.note_call("c") is True                 # 第 5 次觸發模式，但這一則照回
+    assert th.in_burst("c")
+    th.try_start("c")                                # 回覆開始：記下時間
+    th.finish("c")
+    clock.t += 2
+    assert th.note_call("c") is False                # 模式中、離上次回覆不到 gap
+
+
+def test_burst_collects_and_merges_then_replies_once_per_gap():
+    th, clock = _burst_throttle()
+    _call_round_robin(th, clock, 5)
+    th.try_start("c"); th.finish("c")
+    for i in range(3):
+        clock.t += 5
+        assert th.note_call("c") is False
+        th.enqueue("c", f"m{i}")
+    assert th.ready_in("c") > 0
+    assert th.drain_ready("c") == []                 # 還沒到時間：留在佇列
+    clock.t += 30
+    assert th.ready_in("c") == 0
+    assert th.drain_ready("c") == ["m0", "m1", "m2"]  # 一次取出合併
+    clock.t += 1
+    assert th.note_call("c") is False                # 取出算一次回覆，又重新計 gap
+
+
+def test_burst_mode_expires_and_normal_again():
+    th, clock = _burst_throttle()
+    _call_round_robin(th, clock, 5)
+    th.try_start("c"); th.finish("c")
+    clock.t += 5
+    assert th.note_call("c") is False                # 這次叫會延長模式
+    th.enqueue("c", "x")
+    clock.t += 119
+    assert th.in_burst("c")                          # 延長了
+    clock.t += 5
+    assert not th.in_burst("c")
+    assert th.ready_in("c") == 0
+    assert th.drain_ready("c") == ["x"]
+    assert th.note_call("c") is True
+
+
+def test_burst_not_triggered_by_slow_calls():
+    th, clock = _burst_throttle()
+    assert all(_call_round_robin(th, clock, 10, step=20))  # 60 秒內不到 5 次
+    assert not th.in_burst("c")
