@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import logging
+import re
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
@@ -22,6 +23,8 @@ MAX_BYTES = 10 * 1024 * 1024
 TIMEOUT = 5.0
 
 ALLOWED_HOSTS = ("cdn.discordapp.com", "media.discordapp.net")
+# 連結預覽圖（YouTube 等）：Discord 代理過的那份，網址還是 Discord 的
+_PROXY_HOST = re.compile(r"images-ext-\d+\.discordapp\.net")
 _EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 IMAGE_PLACEHOLDER = "[圖片]"
 
@@ -31,7 +34,8 @@ def is_allowed_url(url: str) -> bool:
         p = urlparse(url)
     except ValueError:
         return False
-    return p.scheme == "https" and (p.hostname or "").lower() in ALLOWED_HOSTS
+    host = (p.hostname or "").lower()
+    return p.scheme == "https" and (host in ALLOWED_HOSTS or bool(_PROXY_HOST.fullmatch(host)))
 
 
 def _is_image_attachment(a: Any) -> bool:
@@ -55,7 +59,8 @@ def image_urls(message: Any) -> list[str]:
             add(getattr(a, "url", None))
     for e in getattr(message, "embeds", None) or []:
         for part in (getattr(e, "image", None), getattr(e, "thumbnail", None)):
-            add(getattr(part, "url", None) if part else None)
+            if part:  # 外部圖片用 Discord 代理的 proxy_url，原始網址（例如 YouTube）不抓
+                add(getattr(part, "proxy_url", None) or getattr(part, "url", None))
     return out
 
 

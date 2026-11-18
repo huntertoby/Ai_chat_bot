@@ -173,3 +173,15 @@ def test_brain_collect_images_end_to_end():
     items = run(Brain.collect_images(fake, history([1, 1])))
     assert len(items) == 2 and all(d.startswith("data:image/jpeg;base64,") for _, d in items)
     assert run(Brain.collect_images(fake, history([1, 1]), spoken=True)) == []
+
+
+def test_link_preview_uses_discord_proxy():
+    """YouTube 等連結預覽圖：用 Discord 代理的 proxy_url（images-ext-N.discordapp.net），原始網址不抓。"""
+    thumb = NS(url="https://i.ytimg.com/vi/abc/hqdefault.jpg",
+               proxy_url="https://images-ext-1.discordapp.net/external/xyz/https/i.ytimg.com/vi/abc/hqdefault.jpg")
+    msg = NS(attachments=[], embeds=[NS(image=None, thumbnail=thumb)])
+    assert vision.image_urls(msg) == [thumb.proxy_url]
+    assert vision.is_allowed_url("https://images-ext-12.discordapp.net/external/a.png")
+    for bad in ("https://images-ext-1.discordapp.net.evil.com/a.png", "https://images-ext-x.discordapp.net/a.png",
+                "http://images-ext-1.discordapp.net/a.png", "https://i.ytimg.com/vi/abc/hqdefault.jpg"):
+        assert not vision.is_allowed_url(bad), bad
