@@ -24,16 +24,33 @@ from .tools import archive as archive_tools
 from .tools.web import TOOL_SPECS, WebTools
 
 _TO_TW = None
-_NAME_PREFIX = re.compile(r"^\s*\[[^\]\n]{1,32}\]\s*")  # 回覆開頭的 [名字]
+# 回覆開頭的 [名字]，或對話紀錄格式 [小傑 回覆 阿明「…」]（引用片段可能很長、含 ]）
+_NAME_PREFIX = re.compile(r"^\s*(?:\[[^\]\n「]{1,32}回覆[^\n]{0,200}?」\]|\[[^\]\n]{1,32}\])\s*")
 
 
 MEMBER_SEARCH_BLOCKED = "（不能拿群組成員的名字上網搜尋：成員的事只看記憶和人物檔案。直接回答就好。）"
 
 
+def _is_alnum(ch: str) -> bool:
+    return ch.isascii() and ch.isalnum()
+
+
 def names_in(query: str, names) -> list[str]:
-    """搜尋字串裡出現的成員名字（2 個字以上才算，避免單字誤判）。"""
+    """搜尋字串裡出現的成員名字（2 個字以上才算，避免單字誤判）。
+    名字全是英文字母／數字：要整個詞相符（前後不是英文字母或數字），不分大小寫；
+    其他（中文、或中英夾雜）照子字串比對，寧可多擋。"""
     q = query.lower()
-    return sorted({n for n in names if len(n) >= 2 and n.lower() in q})
+    hit = set()
+    for n in names:
+        if len(n) < 2:
+            continue
+        low = n.lower()
+        if all(_is_alnum(c) for c in low):
+            if re.search(r"(?<![a-z0-9])" + re.escape(low) + r"(?![a-z0-9])", q):
+                hit.add(n)
+        elif low in q:
+            hit.add(n)
+    return sorted(hit)
 
 
 def to_traditional(text: str) -> str:

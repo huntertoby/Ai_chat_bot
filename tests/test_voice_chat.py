@@ -423,3 +423,29 @@ def test_tts_first_segment_is_short_and_sent_alone_then_in_order(tmp_path):
         assert [e[1] for e in events if e[0] == "play"] == parts
 
     asyncio.run(run())
+
+
+def test_names_in_short_english_name_needs_whole_word():
+    from yuki.brain import names_in
+    names = ["al", "Ab", "阿明", "Bob2號"]
+    assert names_in("Alcaraz wins final", names) == []          # 英文短名不擋含它字母的長字
+    assert names_in("tab key shortcut", names) == []
+    assert names_in("al 是誰", names) == ["al"]                 # 獨立出現、後接中文
+    assert names_in("查一下AL的事", names) == ["al"]            # 前後接中文
+    assert names_in("who is Al?", names) == ["al"]              # 前後標點／空白、不分大小寫
+    assert names_in("阿明的學校", names) == ["阿明"]             # 中文照舊子字串
+    assert names_in("bob2號的事", names) == ["Bob2號"]          # 中英夾雜照子字串（寧可多擋）
+    assert names_in("xbob2號", names) == ["Bob2號"]
+
+
+def test_name_prefix_strips_reply_format_and_plain_brackets():
+    from yuki.brain import _NAME_PREFIX
+    cases = {
+        "[小傑] 好喔": "好喔",
+        "[小傑 回覆 阿明「這是一段很長很長很長的被引用內容，超過三十二個字也要能被去掉，包括 [括號] 在內」] 好喔": "好喔",
+        "[小傑 回覆你「…」]\n接話": "接話",
+        "阿明 你那句我看到了": "阿明 你那句我看到了",   # 自然稱呼不動
+        "好喔 [備註] 內容": "好喔 [備註] 內容",
+    }
+    for raw, want in cases.items():
+        assert _NAME_PREFIX.sub("", raw) == want, raw
