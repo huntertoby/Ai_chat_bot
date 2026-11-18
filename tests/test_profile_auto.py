@@ -107,3 +107,20 @@ def test_opted_out_people_are_cleaned(tmp_path):
     up.opted_out = lambda gid: {"9"}
     asyncio.run(up.run_once(G))
     assert db.stats(G) == [] and not up.files.read(G, "9")
+
+
+def test_few_facts_without_file_do_not_keep_it_busy(tmp_path, caplog):
+    """資訊太少、又還沒有檔案的人不整理；之後每次閒置檢查都直接 skip，不再寫「更新完成」。"""
+    archive = archive_with(20)
+    db = ProfileDB(":memory:")
+    builder = FakeBuilder(archive.db)
+    builder.db = db
+    up = ProfileUpdater(lambda gid: builder, db, ProfileFiles(tmp_path), archive.db, lambda: True,
+                        lambda gid: set(), min_new=20, min_facts=5)
+    assert asyncio.run(up.run_once(G)) == "done"   # 抽了 2 段 → 2 條資訊，不夠 5 條
+    assert builder.merged == []
+    assert not up.has_unmerged(G)
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        assert asyncio.run(up.run_once(G)) == "skip"
+    assert "更新完成" not in caplog.text

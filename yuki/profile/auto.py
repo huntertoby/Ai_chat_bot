@@ -52,8 +52,13 @@ class ProfileUpdater:
         return [r[0] for r in self.archive.execute("SELECT DISTINCT guild_id FROM messages")
                 if r[0] not in self.skip_guilds]
 
+    def mergeable(self, guild_id: str) -> list[tuple[str, str]]:
+        """有新資訊、而且夠格整理的人：(sid, name)。資訊太少又還沒有檔案的人不算（不然每分鐘都會被當成還沒合併）。"""
+        return [(sid, name) for sid, name, total, pending in self.db.stats(guild_id)
+                if pending and (total >= self.min_facts or self.files.read(guild_id, sid))]
+
     def has_unmerged(self, guild_id: str) -> bool:
-        return any(pending for _, _, _, pending in self.db.stats(guild_id))
+        return bool(self.mergeable(guild_id))
 
     async def run_forever(self) -> None:
         while True:
@@ -92,12 +97,13 @@ class ProfileUpdater:
                         return "error"  # 不能跳過這段：進度依頻道往後推，跳過就永遠不會處理
                     self.db.save_segment(guild_id, seg.channel_id, seg.last_id, facts)
 
-            for sid, name, total, pending in self.db.stats(guild_id):
-                if not pending or (total < self.min_facts and not self.files.read(guild_id, sid)):
-                    continue
+            merged = 0
+            for sid, name in self.mergeable(guild_id):
                 if not self.is_idle():
                     log.info("人物檔案：有人在講話，整理先停在 %s 之前", name)
                     return "busy"
                 await builder.merge_one(sid)
-            log.info("人物檔案：更新完成")
+                merged += 1
+            if new >= self.min_new or merged:
+                log.info("人物檔案：更新完成（整理 %d 人）", merged)
             return "done"
