@@ -18,6 +18,7 @@ from ..llm import LLMError
 from ..memory.writer import ChatLine
 from ..rag.decompose import Person
 from .asr import asr_context
+from .names import NicknameCache
 from .dave import decrypt_error_count, patch_reader
 from .segmenter import Segmenter, Utterance, to_16k
 from .tts import sentences
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 DECRYPT_CHECK_SEC = 30  # 多久看一次收音解密失敗的計數
 BARGE_IN_MS = 500  # Yuki 講話時，名單上的人連續講超過這麼久就停下來
+ASR_NAMES_MAX_CHARS = 400  # 給 ASR 的名字提示最多這麼多字
 
 
 def should_reply(text: str, *, humans: int, wake: re.Pattern, attention_until: float, now: float) -> bool:
@@ -59,6 +61,18 @@ class ListenSink(voice_recv.AudioSink):
         pass
 
 
+class _Reply:
+    """正在處理的一句：還沒開始念之前，同一個人的下一句到了就取消它、接在一起重回。"""
+
+    def __init__(self, user_id: str, text: str):
+        self.user_id = user_id
+        self.text = text
+        self.task: asyncio.Task | None = None
+        self.line: ChatLine | None = None  # 已經放進對話紀錄的那一行（合併時要拿掉）
+        self.playing = False  # 已經開始念了：不能再取消，之後的話走插話邏輯
+        self.merged = False  # 被下一句取代了
+
+
 class VoiceSession:
     def __init__(self, bot: "YukiBot", vc: voice_recv.VoiceRecvClient, segmenter: Segmenter):
         self.bot = bot
@@ -76,6 +90,8 @@ class VoiceSession:
         self._closed = False
         self._decrypt_errors = 0
         self._decrypt_checked = time.monotonic()
+        self._cur: _Reply | None = None
+        self._nicknames = NicknameCache(bot.brain.profiles)
 
     @property
     def channel(self) -> discord.VoiceChannel:
@@ -162,8 +178,7 @@ class VoiceSession:
         if member is None:
             return
         t0 = time.monotonic()
-        names = [m.display_name for m in self.channel.members] + [self.s.bot_name]
-        context = asr_context(names, self.s.voice_asr_hotwords)
+        context = asr_context(self.asr_names(), self.s.voice_asr_hotwords, ASR_NAMES_MAX_CHARS)
         try:
             text = to_traditional(await self.bot.voice_asr.transcribe(to_16k(utt.audio48), context))
         except Exception:
@@ -173,15 +188,53 @@ class VoiceSession:
         log.info("語音：%s（%.1f 秒）→「%s」ASR %.2f 秒（講完後 %.2f 秒）", member.display_name, utt.seconds,
                  text, t - t0, t - utt.ended)
         if text:
-            self.queue.put_nowait((utt, member, text, t, (t - t0) * 1000))
+            self._enqueue((utt, member, text, t, (t - t0) * 1000))
 
+    def asr_names(self) -> list[str]:
+        """給 ASR 提示的名字，越前面越重要：語音頻道裡的人 → Yuki → 伺服器所有成員的名稱 → 人物檔案裡的綽號。
+        測試伺服器的成員和人物檔案借主伺服器的（跟回覆一樣）。只有名字，沒有對話。"""
+        guild = self.channel.guild
+        names = [m.display_name for m in self.channel.members if not m.bot] + [self.s.bot_name]
+        try:
+            names += [p.name for p in self.bot.members_of(guild)]
+            for gid in dict.fromkeys([str(guild.id), self.bot.archive_guild(guild)]):
+                if gid:
+                    names += self._nicknames.get(gid)
+        except Exception:
+            log.warning("語音：整理 ASR 名字提示失敗，只用頻道裡的名字", exc_info=True)
+        return [n for n in dict.fromkeys(names) if n and (len(n) >= 2 or n == self.s.bot_name)]
+
+    def _enqueue(self, item: tuple) -> None:
+        """轉好的一句進排隊。同一個人上一句的回覆還沒開始念（還在想或還在合成）→ 取消那個回覆，
+        兩句接成一句重新回；已經開始念的不動（那是插話，由 _watch 的插話邏輯處理）。"""
+        utt, member, text, t_asr, asr_ms = item
+        cur = self._cur
+        if cur and cur.task and not cur.task.done() and not cur.playing and cur.user_id == str(member.id):
+            cur.merged = True
+            cur.task.cancel()  # 取消 LLM／TTS 的 await：LM Studio 的連線會斷、排隊的位置會放掉
+            h = self.bot.brain.history[self.channel_key]
+            if cur.line is not None and h and h[-1] is cur.line:
+                h.pop()  # 上一句還在對話紀錄裡：拿掉，免得合併後同一句話出現兩次
+            log.info("語音：回覆還沒開始念，下一句到了，兩句合併重回")
+            self.queue.put_nowait((utt, member, f"{cur.text} {text}", t_asr, asr_ms, text))
+            return
+        self.queue.put_nowait(item)
     async def _work(self) -> None:
         while not self._closed:
             item = await self.queue.get()
+            cur = self._cur = _Reply(str(item[1].id), item[2])
+            cur.task = asyncio.ensure_future(self.handle(*item))
             try:
-                await self.handle(*item)
+                await asyncio.wait({cur.task})  # 不用 await task 本身：task 被合併取消時這裡不能跟著被取消
             except asyncio.CancelledError:
+                cur.task.cancel()
                 raise
+            finally:
+                self._cur = None
+            if cur.task.cancelled():
+                continue
+            try:
+                cur.task.result()
             except LLMError:
                 log.warning("語音：LM Studio 失敗，這句沒回", exc_info=True)  # 已通知；用 warning 避免重複通知
             except Exception:
@@ -191,11 +244,15 @@ class VoiceSession:
         return self.channel.guild.get_member(int(user_id))
 
     async def handle(self, utt: Utterance, member: discord.Member, text: str, t_asr: float,
-                     asr_ms: float | None = None) -> None:
-        await self._post_log(f"🎙️ **{member.display_name}**：{text}")
+                     asr_ms: float | None = None, new_text: str | None = None) -> None:
+        """new_text：合併時只有新的那一句（紀錄頻道只貼新的，前一句已經貼過）。"""
+        await self._post_log(f"🎙️ **{member.display_name}**：{new_text or text}")
 
         author = Person(str(member.id), member.display_name)
-        self.bot.brain.observe(self.channel_key, ChatLine(author, text))
+        line = ChatLine(author, text)
+        self.bot.brain.observe(self.channel_key, line)
+        if self._cur is not None and self._cur.task is asyncio.current_task():
+            self._cur.line = line
         self.bot._last_activity = time.monotonic()
         now = time.monotonic()
         humans = sum(1 for m in self.channel.members if not m.bot)
@@ -211,50 +268,68 @@ class VoiceSession:
                                user_ids=[author.id]) as tr:
             if asr_ms is not None:
                 tr.lat("asr", asr_ms)
-            self.bot._replying += 1
-            t_start = time.monotonic()
             try:
-                voice_now = self.bot.voice.describe(gid, datetime.now())
-                reply = await self.bot.brain.reply(gid, self.channel_key, author, text,
-                                                   members=self.bot.members_of(self.channel.guild),
-                                                   voice=voice_now, spoken=True,
-                                                   owner=self.bot.owner_name(self.channel.guild),
-                                                   archive_guild=self.bot.archive_guild(self.channel.guild))
-            except LLMError as e:
-                alert.notify("lmstudio", "LM Studio 連線", "語音回覆時連不上 LM Studio", exc=e)
-                raise
-            finally:
-                self.bot._replying -= 1
-                tr.lat("llm", (time.monotonic() - t_start) * 1000)
-            t_llm = time.monotonic()
-            log.info("語音：Yuki 回「%s」LLM %.2f 秒", reply, t_llm - t_asr)
-            tr.final = reply or None
-            if not reply:
+                await self._reply_and_speak(gid, author, text, utt, t_asr, tr)
+            except asyncio.CancelledError:
+                if self._cur is None or not self._cur.merged:
+                    raise  # 真的被取消（關閉語音）
+                # 被下一句取代：這筆記成略過，下一筆帶著兩句接起來的文字重新回
                 tr.outcome = "skipped"
-                return
-            self.bot.brain.observe(self.channel_key, ChatLine(Person(str(self.bot.user.id), self.s.bot_name),
-                                                              reply, is_bot=True))
-            await self._post_log(f"🔊 **{self.s.bot_name}**：{reply}")
-            await self.speak(reply, started=utt.ended)
+                tr.degrade("merged")
+
+    async def _reply_and_speak(self, gid: str, author: Person, text: str, utt: Utterance, t_asr: float, tr) -> None:
+        self.bot._replying += 1
+        t_start = time.monotonic()
+        try:
+            voice_now = self.bot.voice.describe(gid, datetime.now())
+            reply = await self.bot.brain.reply(gid, self.channel_key, author, text,
+                                               members=self.bot.members_of(self.channel.guild),
+                                               voice=voice_now, spoken=True,
+                                               owner=self.bot.owner_name(self.channel.guild),
+                                               archive_guild=self.bot.archive_guild(self.channel.guild))
+        except LLMError as e:
+            alert.notify("lmstudio", "LM Studio 連線", "語音回覆時連不上 LM Studio", exc=e)
+            raise
+        finally:
+            self.bot._replying -= 1
+            tr.lat("llm", (time.monotonic() - t_start) * 1000)
+        t_llm = time.monotonic()
+        log.info("語音：Yuki 回「%s」LLM %.2f 秒", reply, t_llm - t_asr)
+        tr.final = reply or None
+        if not reply:
+            tr.outcome = "skipped"
+            return
+        self.bot.brain.observe(self.channel_key, ChatLine(Person(str(self.bot.user.id), self.s.bot_name),
+                                                          reply, is_bot=True))
+        await self._post_log(f"🔊 **{self.s.bot_name}**：{reply}")
+        await self.speak(reply, started=utt.ended)
 
     async def speak(self, text: str, *, started: float | None = None) -> None:
         parts = sentences(text)[:3]  # 模型偶爾講太長：最多念 3 句
         if not parts:
             return
         self._interrupt.clear()
-        # 每句同時開始合成，念第一句的時候後面的已經在準備
-        jobs = [asyncio.create_task(self.bot.voice_tts.synth(p)) for p in parts]
-        self.speaking = True
         tr, t_speak = trace.current(), time.monotonic()
+        jobs: list[asyncio.Task] = []
+        self.speaking = True
         try:
-            for i, job in enumerate(jobs):
-                mp3 = await job
-                if i == 0 and tr:
-                    tr.lat("tts", (time.monotonic() - t_speak) * 1000)  # 第一句合成完成的時間
+            # 第一句單獨先合成：BreezyVoice 一次只做一段，同時送好幾段第一句會排在後面
+            jobs.append(asyncio.ensure_future(self.bot.voice_tts.synth(parts[0])))
+            mp3 = await jobs[0]
+            if tr:
+                tr.lat("tts", (time.monotonic() - t_speak) * 1000)  # 第一句合成完成的時間
+            # 第一句好了才送後面的，一句接一句（念第一句的時候合成第二句）
+            for p in parts[1:]:
+                jobs.append(asyncio.ensure_future(self._synth_after(jobs[-1], p)))
+            for i in range(len(parts)):
+                if i:
+                    mp3 = await jobs[i]
                 if self._interrupt.is_set() or not self.vc.is_connected():
                     break
                 if i == 0 and started is not None:
                     log.info("語音：講完到開口 %.2f 秒", time.monotonic() - started)
+                if self._cur is not None:
+                    self._cur.playing = True  # 開始念了：之後來的話不再合併
                 await self._play(mp3)
                 if self._interrupt.is_set():
                     break
@@ -262,6 +337,10 @@ class VoiceSession:
             self.speaking = False
             for job in jobs:
                 job.cancel()
+
+    async def _synth_after(self, prev: asyncio.Task, text: str) -> bytes:
+        await asyncio.wait({prev})  # 前一段合成完才送這段（前一段失敗也照送，失敗由念到那段時才處理）
+        return await self.bot.voice_tts.synth(text)
 
     async def _play(self, mp3: bytes) -> None:
         done = asyncio.Event()

@@ -170,7 +170,7 @@ class Settings:
     voice_tts_voice: str = field(default_factory=lambda: _str("VOICE_TTS_VOICE", "zh-TW-HsiaoChenNeural"))
     # VOICE_TTS=breezy：WSL 裡的 scripts/breezy_server.py；連不上時自動改用 Edge
     voice_tts_url: str = field(default_factory=lambda: _str("VOICE_TTS_URL", "http://127.0.0.1:8890"))
-    voice_silence_ms: int = field(default_factory=lambda: _int("VOICE_SILENCE_MS", 700))
+    voice_silence_ms: int = field(default_factory=lambda: _int("VOICE_SILENCE_MS", 900))
     voice_alone_leave_seconds: int = field(default_factory=lambda: _int("VOICE_ALONE_LEAVE_SECONDS", 120))
     # 有其他人在時：叫她名字後幾秒內，名單上的人說的話都回
     voice_attention_seconds: int = field(default_factory=lambda: _int("VOICE_ATTENTION_SECONDS", 60))

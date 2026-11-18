@@ -19,7 +19,11 @@ def speakable(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
-def sentences(text: str, min_chars: int = 6, first_max: int = 12) -> list[str]:
+_BREAK = re.compile(r"[，,、]")
+_PARTICLE = re.compile(r"[啊啦喔哦吧呢耶欸嘛]")
+
+
+def sentences(text: str, min_chars: int = 6, first_max: int = 8) -> list[str]:
     """依句號、問號、驚嘆號切句；太短的併到下一句，免得一個字一個字念。"""
     out: list[str] = []
     buf = ""
@@ -34,12 +38,15 @@ def sentences(text: str, min_chars: int = 6, first_max: int = 12) -> list[str]:
         else:
             out.append(buf)
     out = [s for s in out if re.search(r"\w", s)]
-    # 本機 TTS 生成時間約等於句子長度：第一句太長就在第一個逗號切開，先念短的那段，早點開口
+    # 本機 TTS 生成時間約等於句子長度：第一句太長就切開，先念短的那段，早點開口。
+    # 在第一句的前 first_max 字內找切點：優先逗號（最靠後的），沒有逗號才找語氣詞；後半段至少 4 字；找不到就照原本
     if out and len(out[0]) > first_max:
-        m = re.search(r"[，,、]", out[0][4:])
-        if m and len(out[0]) - (m.end() + 4) >= 4:
-            cut = m.end() + 4
-            out[:1] = [out[0][:cut], out[0][cut:]]
+        head = out[0]
+        for pattern in (_BREAK, _PARTICLE):
+            cuts = [m.end() for m in pattern.finditer(head[:first_max]) if m.end() >= 3 and len(head) - m.end() >= 4]
+            if cuts:
+                out[:1] = [head[:cuts[-1]], head[cuts[-1]:]]
+                break
     return out
 
 

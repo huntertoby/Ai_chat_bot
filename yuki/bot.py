@@ -550,7 +550,12 @@ def register_commands(bot: YukiBot) -> None:
             await interaction.response.send_message("你先進語音頻道再叫我。", ephemeral=True)
             return
         await interaction.response.defer(thinking=True)  # 第一次要載入語音辨識模型
-        await bot.start_voice(state.channel)
+        try:
+            await bot.start_voice(state.channel)
+        except Exception as e:
+            log.error("進語音失敗（語音辨識模型 %s）", bot.settings.voice_asr_model, exc_info=True)
+            await interaction.followup.send(f"我進不了語音：{type(e).__name__}（詳情看 log）。", ephemeral=True)
+            return
         listening = [m.display_name for uid in bot.settings.voice_listen_users
                      if (m := interaction.guild.get_member(int(uid)))]
         note = f"（目前只聽得到：{'、'.join(listening)}）" if listening else "（還沒設定要聽誰，VOICE_LISTEN_USERS 是空的）"
