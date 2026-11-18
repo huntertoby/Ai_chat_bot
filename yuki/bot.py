@@ -529,6 +529,7 @@ class YukiBot(commands.Bot):
     async def _on_called(self, message: discord.Message, author: Person, text: str, mentions: list[Person],
                          *, count_tag: bool = True) -> None:
         cid = message.channel.id
+        gate_ok = self.throttle.note_call(cid) if count_tag else True  # 頻道層級：每次被叫都算，包含被單人限制擋掉的
         if count_tag and not self.throttle.note_tag(author.id):
             dropped = self.throttle.drop_queued(cid, lambda t: t.author.id == author.id)
             log.info("%s 一直叫她（洗版），不回（排隊中的 %d 則也丟掉）", author.name, dropped)
@@ -537,7 +538,7 @@ class YukiBot(commands.Bot):
             await message.reply("找我有事嗎？", mention_author=False)
             return
         turn = Turn(message, author, text, mentions, trigger="called")
-        if not self.throttle.note_call(cid):  # 熱鬧模式：先收集，離上次回覆滿 gap 秒再合成一次回
+        if not gate_ok:  # 熱鬧模式：先收集，離上次回覆滿 gap 秒再合成一次回
             self.throttle.enqueue(cid, turn)
             if not self.throttle.is_busy(cid):
                 self._schedule_flush(cid)

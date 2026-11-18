@@ -201,10 +201,10 @@ class Settings:
     throttle_tag_limit: int = field(default_factory=lambda: _int("THROTTLE_TAG_LIMIT", 3))
     throttle_tag_window_sec: float = field(default_factory=lambda: _float("THROTTLE_TAG_WINDOW_SEC", 60))
     throttle_tag_cooldown_sec: float = field(default_factory=lambda: _float("THROTTLE_TAG_COOLDOWN_SEC", 120))
-    channel_call_burst: int = field(default_factory=lambda: _int("CHANNEL_CALL_BURST", 5))
+    channel_call_burst: int = field(default_factory=lambda: _int("CHANNEL_CALL_BURST", 4))
     channel_call_window_sec: float = field(default_factory=lambda: _float("CHANNEL_CALL_WINDOW_SEC", 60))
     channel_burst_mode_sec: float = field(default_factory=lambda: _float("CHANNEL_BURST_MODE_SEC", 120))
-    channel_call_gap_sec: float = field(default_factory=lambda: _float("CHANNEL_CALL_GAP", 30))
+    channel_call_gap_sec: float = field(default_factory=lambda: _float("CHANNEL_CALL_GAP", 90))
     # 雜訊：去掉表情標點後 ≤ 這麼多字的訊息不判斷；大量重複：同字元連續幾次、同一人被 @ 幾次
     noise_max_chars: int = field(default_factory=lambda: _int("NOISE_MAX_CHARS", 2))
     flood_repeat_chars: int = field(default_factory=lambda: _int("FLOOD_REPEAT_CHARS", 10))

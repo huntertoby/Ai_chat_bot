@@ -104,10 +104,10 @@ class ThrottleConfig:
     tag_cooldown_sec: float = 120.0  # 洗版的人冷卻多久
     queue_max: int = 8               # 每頻道排隊上限（超過丟最舊的）
     # 頻道層級（多人輪流叫她）：window 秒內被叫 ≥ burst 次 → 熱鬧模式 mode_sec 秒，期間最多每 gap 秒回一次
-    channel_call_burst: int = 5
+    channel_call_burst: int = 4
     channel_call_window_sec: float = 60.0
     channel_burst_mode_sec: float = 120.0
-    channel_call_gap_sec: float = 30.0
+    channel_call_gap_sec: float = 90.0
 
 
 class Throttle:
