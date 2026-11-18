@@ -3,6 +3,7 @@ import asyncio
 import base64
 import io
 import json
+import time
 from types import SimpleNamespace as NS
 
 import httpx
@@ -185,3 +186,23 @@ def test_link_preview_uses_discord_proxy():
     for bad in ("https://images-ext-1.discordapp.net.evil.com/a.png", "https://images-ext-x.discordapp.net/a.png",
                 "http://images-ext-1.discordapp.net/a.png", "https://i.ytimg.com/vi/abc/hqdefault.jpg"):
         assert not vision.is_allowed_url(bad), bad
+
+
+def test_wait_for_embeds_picks_up_late_preview():
+    """Discord 的連結預覽是訊息送出後才補上的：有連結就等一下，沒連結就不等。"""
+    msg = NS(content="看這個 https://www.youtube.com/watch?v=abc", embeds=[])
+
+    async def scenario():
+        async def later():
+            await asyncio.sleep(0.05)
+            msg.embeds = [NS(image=None, thumbnail=None)]
+        task = asyncio.create_task(later())
+        await vision.wait_for_embeds(msg, timeout=1.0, step=0.01)
+        await task
+        return msg.embeds
+
+    assert run(scenario())
+    plain = NS(content="沒有連結", embeds=[])
+    t = time.monotonic()
+    run(vision.wait_for_embeds(plain, timeout=1.0))
+    assert time.monotonic() - t < 0.1

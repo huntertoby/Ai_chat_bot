@@ -64,6 +64,19 @@ def image_urls(message: Any) -> list[str]:
     return out
 
 
+_LINK = re.compile(r"https?://\S+")
+
+
+async def wait_for_embeds(message: Any, timeout: float = 2.0, step: float = 0.25) -> None:
+    """有連結但還沒有預覽時，等 Discord 補上 embed（discord.py 收到編輯事件會更新同一個訊息物件）。"""
+    if getattr(message, "embeds", None) or not _LINK.search(getattr(message, "content", "") or ""):
+        return
+    waited = 0.0
+    while waited < timeout and not message.embeds:
+        await asyncio.sleep(step)
+        waited += step
+
+
 def _shrink(data: bytes, long_side: int) -> bytes:
     from PIL import Image
 

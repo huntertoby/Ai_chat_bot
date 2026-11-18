@@ -406,6 +406,8 @@ class YukiBot(commands.Bot):
             await message.reply("好的，我先去旁邊休息囉！有事再叫我～", mention_author=False)
             return
 
+        if self.settings.vision_enabled and (called or active):
+            await vision.wait_for_embeds(message)  # 連結預覽是 Discord 事後補上的（訊息編輯），等一下
         images = vision.image_urls(message) if self.settings.vision_enabled else []
         if images and not text:
             text = "（貼了圖片）"  # 只有圖片沒有文字：讓這則進對話紀錄，圖才帶得到
