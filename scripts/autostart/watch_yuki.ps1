@@ -26,7 +26,30 @@ Write-PidFile $Tag $PID $null $null
 Write-Log $Tag ('watcher started (pid {0})' -f $PID)
 $logFile = Join-Path $LogDir 'yuki.log'
 
+# Yuki needs the LM Studio model (loaded) and SearXNG. Wait with no upper limit (D-16).
+function Wait-Dependencies {
+    $lastNote = Get-Date
+    $first = $true
+    while ($true) {
+        $lmOk = Test-ModelLoaded $LlmModel
+        $sxOk = Test-Http $SearxFetch
+        if ($lmOk -and $sxOk) {
+            if (-not $first) { Write-Log $Tag 'lmstudio model and searxng are ready' }
+            return
+        }
+        if ($first -or ((Get-Date) - $lastNote).TotalMinutes -ge 5) {
+            $w = @()
+            if (-not $lmOk) { $w += 'lmstudio' }
+            if (-not $sxOk) { $w += 'searxng' }
+            Write-Log $Tag ('still waiting for ' + ($w -join '/'))
+            $lastNote = Get-Date; $first = $false
+        }
+        Start-Sleep -Seconds 5
+    }
+}
+
 while ($true) {
+    Wait-Dependencies
     $inner = '"{0}" -u main.py >> "{1}" 2>&1' -f $VenvPython, $logFile
     $p = Start-Process -FilePath 'cmd.exe' -ArgumentList ('/s /c "' + $inner + '"') `
         -WorkingDirectory $Root -WindowStyle Hidden -PassThru

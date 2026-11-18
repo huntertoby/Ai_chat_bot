@@ -1,7 +1,8 @@
 # Stop only the processes recorded in the pid files. ASCII only.
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-foreach ($Tag in @('yuki', 'breezy')) {
+# LM Studio (server, models), Docker and the SearXNG container are shared: only their watchers are stopped.
+foreach ($Tag in @('yuki', 'breezy', 'lmstudio', 'searxng')) {
     $d = Read-PidFile $Tag
     if (-not $d) { Write-Log $Tag 'stop: no pid file'; continue }
     # watcher first, so it cannot restart anything

@@ -109,17 +109,23 @@ eval/                      評估題目（合成資料）
 
 ### 開機自動啟動（Windows，選用）
 
-用「啟動資料夾捷徑」在登入 Windows 後自動開 BreezyVoice（WSL）和 Yuki；掛掉會 10 秒後重開（1 小時內重開超過 5 次就停，看 log）。
-LM Studio 和 SearXNG 不包含在內，要自己設定開機啟動。
+用「啟動資料夾捷徑」在登入 Windows 後自動開四樣東西（各有一個看顧程式，掛掉會重開，1 小時內超過 5 次就停，看 log）：
+- LM Studio：開 Server（埠取自 `.env` 的 `LMSTUDIO_BASE_URL`），載入 `.env` 的 `LLM_MODEL`（context 16384、同時預測 1、MTP 開；Flash Attention 沒有 CLI 參數，用 LM Studio 存的預設）。不會卸載別的模型。顯卡放不下時載入會失敗，只寫 log。
+- SearXNG：Docker 沒開就先開 Docker Desktop，再 `docker compose up -d`。
+- BreezyVoice（WSL）。
+- Yuki：要等 LM Studio 載好模型、SearXNG 有回應才啟動（會一直等，每 5 分鐘在 log 寫一行 still waiting）。
+
+這些不會改 LM Studio、Docker 的任何設定。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\autostart\install.ps1     # 在啟動資料夾建立捷徑
 powershell -ExecutionPolicy Bypass -File scripts\autostart\uninstall.ps1   # 移除捷徑
 powershell -ExecutionPolicy Bypass -File scripts\autostart\start.ps1       # 手動啟動（不跳視窗；已在跑的不會重複開）
-powershell -ExecutionPolicy Bypass -File scripts\autostart\stop.ps1        # 手動停止（只結束腳本自己開的程序）
+powershell -ExecutionPolicy Bypass -File scripts\autostart\stop.ps1        # 手動停止（只結束四個看顧程式和 Yuki、BreezyVoice）
 ```
 
-- log：`logs/autostart.log`（看顧程式）、`logs/yuki.log`、`logs/breezy.log`；程序編號記在 `logs/autostart/*.pid`。
+- `stop.ps1` **不會**關 LM Studio（Server、模型）、Docker 和 SearXNG 容器，因為別的工具也在用。要關自己跑 `lms server stop`、`docker compose -f searxng/docker-compose.yml down`。
+- log：`logs/autostart.log`（看顧程式）、`logs/yuki.log`、`logs/breezy.log`、`logs/lmstudio.log`、`logs/searxng.log`；程序編號記在 `logs/autostart/*.pid`。
 - 要自己開 Yuki 做開發前，先跑 `stop.ps1`，做完再 `start.ps1`。
 - BreezyVoice 的 WSL 發行版（預設 `swift`）在 `scripts/autostart/common.ps1` 最上面改。
 

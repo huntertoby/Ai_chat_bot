@@ -15,12 +15,12 @@
 - 只結束自己啟動的 Yuki／BreezyVoice 程序（Yuki 可能是使用者自己開的）。
 
 ## 現況（最後更新：2026-11-18）
-- 進行中：A1 等使用者跑 `scripts/autostart/install.ps1`（開發 PM 執行時被權限擋下），再重開機驗收 `/來語音`。腳本與手動測試已完成，見 `docs/stages/A1-報告.md`。
-- 最近完成：A1 腳本（`scripts/autostart/`），手動測試 5 項通過（commit 9565ee1）。
-- 已知：Yuki 和 BreezyVoice 目前都沒在跑（測完已 stop）；跑 `start.ps1` 就會開。
+- 進行中：A1 第二版（含 LM Studio、SearXNG，D-16）已 push。等使用者跑 scripts/autostart/install.ps1、重開機登入、測試伺服器 /來語音 驗收；LM Studio 實際載入模型也在那時才會驗到（見 docs/stages/A1-報告.md）。
+- 最近完成：A1 腳本兩版（scripts/autostart/：四個看顧＋start/stop/install）。
+- 已知：顯卡被別的工具的 gemma（16GB）佔著時，Yuki 的模型載不進去。Docker Desktop 開時會跳視窗。Docker＋SearXNG 目前開著（實作測試時開的）。
 
 ## 待辦（階段 A，照順序）
-- [ ] A1 開機自動啟動 Yuki 和 BreezyVoice（啟動資料夾捷徑，D-15；BreezyVoice 要等 WSL 起來；Yuki 掛掉要自動重開）。只動啟動資料夾，其他系統設定要改先回報。
+- [ ] A1（等使用者驗收）開機自動啟動 Yuki 和 BreezyVoice（啟動資料夾捷徑，D-15；BreezyVoice 要等 WSL 起來；Yuki 掛掉要自動重開）。只動啟動資料夾，其他系統設定要改先回報。
 - [ ] A2 維運：AI 追蹤紀錄、出錯私訊擁有者（開發規格 6.12）
 - [ ] A3 語音實測收尾（開發規格 6.0 的 5 項實測；要使用者一起進語音）
 - [ ] A4 小修：
@@ -31,8 +31,6 @@
 ## 待決事項（要誰決定什麼）
 | 事項 | 選項 | 建議 | 等誰 |
 |---|---|---|---|
-| A1：開機會自動登入 Windows 嗎？ | 會／不會 | 啟動資料夾登入後才跑，不會的話要人登入 | 使用者（經總 PM） |
-| A1：LM Studio、SearXNG 會自己開嗎？ | 已會／要併入 A1／另開一項 | 不會的話 `/來語音` 驗收過不了 | 使用者（經總 PM） |
 
 ## 要讀的文件
 - `CLAUDE.md`（環境、隱私、寫 prompt 的經驗）

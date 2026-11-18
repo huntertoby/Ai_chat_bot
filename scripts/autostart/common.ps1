@@ -90,3 +90,61 @@ function Request-Restart {
     [void]$script:RestartTimes.Add($now)
     return $true
 }
+
+# ---- LM Studio / SearXNG helpers (added in A1 v2) ----
+$LmsExe      = Join-Path $env:USERPROFILE '.lmstudio\bin\lms.exe'
+$EnvFile     = Join-Path $Root '.env'
+
+# Read ONE value from .env (never log the whole file). Returns $Default when missing.
+function Get-EnvValue([string]$Key, [string]$Default) {
+    if (Test-Path -LiteralPath $EnvFile) {
+        foreach ($l in (Get-Content -LiteralPath $EnvFile -Encoding UTF8)) {
+            if ($l -match ('^\s*' + [regex]::Escape($Key) + '\s*=\s*(.*)$')) {
+                $v = $Matches[1].Trim().Trim('"').Trim("'")
+                if ($v) { return $v }
+            }
+        }
+    }
+    return $Default
+}
+
+$LlmModel     = Get-EnvValue 'LLM_MODEL' ''
+$LmsBaseUrl   = (Get-EnvValue 'LMSTUDIO_BASE_URL' 'http://127.0.0.1:8001/v1').TrimEnd('/')
+$LmsModelsUrl = $LmsBaseUrl + '/models'
+$LmsPort      = 8001
+if ($LmsBaseUrl -match ':(\d+)(/|$)') { $LmsPort = [int]$Matches[1] }
+$SearxFetch   = 'http://127.0.0.1:8888/'   # where docker publishes it (searxng/docker-compose.yml)
+
+# Any HTTP answer (even 4xx) counts as "responding"; connection errors / timeouts do not.
+function Test-Http([string]$Url, [int]$TimeoutSec = 3) {
+    try { $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec $TimeoutSec; return $true }
+    catch { return [bool]($_.Exception.Response) }
+}
+
+function Test-ModelsEndpoint { Test-Http $LmsModelsUrl }
+
+# /v1/models lists every downloaded model, so "loaded" must come from `lms ps`.
+function Test-ModelLoaded([string]$Model) {
+    if (-not $Model) { return $false }
+    if (-not (Test-Path -LiteralPath $LmsExe)) {
+        # no CLI: best effort, the endpoint answering with the model name
+        try { return ((Invoke-WebRequest -Uri $LmsModelsUrl -UseBasicParsing -TimeoutSec 5).Content.Contains($Model)) } catch { return $false }
+    }
+    try {
+        $txt = (& $LmsExe ps --json 2>$null) -join "`n"
+        if (-not $txt) { return $false }
+        foreach ($m in @($txt | ConvertFrom-Json)) {
+            if ($m.identifier -eq $Model -or $m.modelKey -eq $Model -or $m.path -eq $Model) { return $true }
+        }
+    } catch { }
+    return $false
+}
+
+# Run a command line hidden, append its output to logs\<LogName>, kill it after TimeoutSec. Returns exit code (-1 = timeout).
+function Invoke-Logged([string]$LogName, [string]$CmdLine, [int]$TimeoutSec) {
+    $lf = Join-Path $LogDir $LogName
+    Add-Content -LiteralPath $lf -Value ('--- {0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $CmdLine.Replace($env:USERPROFILE, '~')) -Encoding UTF8
+    $p = Start-Process -FilePath 'cmd.exe' -ArgumentList ('/s /c "' + $CmdLine + ' >> "' + $lf + '" 2>&1"') -WorkingDirectory $Root -WindowStyle Hidden -PassThru
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) { Stop-Tree $p.Id; return -1 }
+    return $p.ExitCode
+}
