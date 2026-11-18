@@ -15,7 +15,7 @@
 - 只結束自己啟動的 Yuki／BreezyVoice 程序（Yuki 可能是使用者自己開的）。
 
 ## 現況（最後更新：2026-11-18）
-- 進行中：A1 等使用者跑 `scriptsutostart\install.ps1`（開發 PM 執行時被權限擋下），再重開機驗收 `/來語音`。腳本與手動測試已完成，見 `docs/stages/A1-報告.md`。
+- 進行中：A1 等使用者跑 `scripts/autostart/install.ps1`（開發 PM 執行時被權限擋下），再重開機驗收 `/來語音`。腳本與手動測試已完成，見 `docs/stages/A1-報告.md`。
 - 最近完成：A1 腳本（`scripts/autostart/`），手動測試 5 項通過（commit 9565ee1）。
 - 已知：Yuki 和 BreezyVoice 目前都沒在跑（測完已 stop）；跑 `start.ps1` 就會開。
 
