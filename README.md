@@ -69,6 +69,7 @@ yuki/
   voice/                   語音對話：DAVE 解密、切句（silero-vad）、ASR、TTS、對話流程
   memory/、rag/、embedding.py   舊的事實記憶 + embedding RAG（RETRIEVAL=embedding 時才用）
 scripts/                   封存抓取、建索引、評估、語音測試、BreezyVoice 服務
+  scripts/build_emoji_catalog.py   一次性：建群組表情／貼圖圖鑑（data/emoji/，6.14；`python -m scripts.build_emoji_catalog --limit 5`）
 searxng/                   SearXNG 的 docker compose 與設定範例
 tests/                     單元測試（不需要模型或網路）
 eval/                      評估題目（合成資料）
