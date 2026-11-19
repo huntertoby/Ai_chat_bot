@@ -74,7 +74,8 @@ class ProfileUpdater:
     async def run_once(self, guild_id: str) -> str:
         """回傳結果：busy（有人在講話，停下）、skip（新訊息不夠）、done（做完）、error。"""
         async with self._lock:
-            for uid in self.opted_out(guild_id):  # 退出的人：資訊和檔案都清掉
+            gone = self.opted_out(guild_id)
+            for uid in gone:  # 退出的人：資訊和檔案都清掉
                 self.db.forget(guild_id, uid)
                 self.files.delete(guild_id, uid)
 
@@ -99,6 +100,9 @@ class ProfileUpdater:
 
             merged = 0
             for sid, name in self.mergeable(guild_id):
+                if sid in gone:  # 別人講到退出的人，抽出來的資訊也不整理成檔案
+                    self.db.forget(guild_id, sid)
+                    continue
                 if not self.is_idle():
                     log.info("人物檔案：有人在講話，整理先停在 %s 之前", name)
                     return "busy"

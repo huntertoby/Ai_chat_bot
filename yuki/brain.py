@@ -295,8 +295,11 @@ class Brain:
         return await self.web.call(name, args)
 
     # ---------- Agentic 檢索（開發規格 6.4）----------
-    def profile_text(self, guild_id: str, user_id: str) -> str:
+    def profile_text(self, guild_id: str, user_id: str, opted_out: set[str] | None = None) -> str:
+        """這個人的人物檔案；這個伺服器沒有就借 PROFILE_FALLBACK_GUILD 的。打過 /不要記我 的人一律沒有。"""
         s = self.settings
+        if user_id in (self.opted_out() if opted_out is None else opted_out):
+            return ""
         text = self.profiles.for_prompt(guild_id, user_id, s.profile_prompt_chars)
         if not text and s.profile_fallback_guild and s.profile_fallback_guild != guild_id:
             text = self.profiles.for_prompt(s.profile_fallback_guild, user_id, s.profile_prompt_chars)
@@ -314,7 +317,8 @@ class Brain:
                     return text
             return ""
 
-        return archive_tools.ArchiveTools(self.archive_db, archive_guild, resolve_person=resolve, profile=profile)
+        return archive_tools.ArchiveTools(self.archive_db, archive_guild, resolve_person=resolve, profile=profile,
+                                          skip_authors=self.opted_out())
 
     async def _reply_agentic(self, guild_id: str, channel_key: str, author: Person, text: str, *, mentions,
                              members, voice: str, spoken: bool, owner: str, archive_guild: str,
@@ -373,11 +377,9 @@ class Brain:
             if not line.is_bot:
                 people.setdefault(line.author.id, line.author)
         out = []
+        gone = self.opted_out()
         for p in people.values():
-            text = self.profiles.for_prompt(guild_id, p.id, s.profile_prompt_chars)
-            if not text and s.profile_fallback_guild and s.profile_fallback_guild != guild_id:
-                # 測試伺服器沒有檔案：借用主伺服器同一個人的
-                text = self.profiles.for_prompt(s.profile_fallback_guild, p.id, s.profile_prompt_chars)
+            text = self.profile_text(guild_id, p.id, gone)  # 測試伺服器沒有檔案：借用主伺服器同一個人的
             if text:
                 out.append((p.name, text))
             if len(out) >= s.profile_max_people:
@@ -390,6 +392,8 @@ class Brain:
         agentic 檢索時不寫事實記憶（封存區本身就是記憶）。"""
         if self.agentic:
             return
+        if not line.is_bot and line.author.id in self.opted_out():
+            return  # /不要記我 的人講的話不寫進記憶
         self._pending[channel_key].append(line)
         self._pending_guild[channel_key] = guild_id
         for p in mentions:

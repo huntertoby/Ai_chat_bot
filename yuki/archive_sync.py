@@ -172,8 +172,12 @@ class ArchiveSync:
             self._skip[guild_id] = self.db.opted_out(guild_id)
         return self._skip[guild_id]
 
-    def forget_skip(self, guild_id: str) -> None:
-        self._skip.pop(guild_id, None)
+    def forget_skip(self, guild_id: str | None = None) -> None:
+        """退出名單變了：不給 guild_id 就全部重讀（退出以人為單位，每個伺服器都要更新）。"""
+        if guild_id is None:
+            self._skip.clear()
+        else:
+            self._skip.pop(guild_id, None)
 
     def _may_advance(self, guild_id: str, channel_id: int) -> bool:
         if channel_id in self._failed.get(guild_id, ()):

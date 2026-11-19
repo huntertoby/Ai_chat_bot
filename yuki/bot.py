@@ -24,6 +24,7 @@ from .config import ROOT, Settings, load_settings
 from .llm import LLMError, LMStudioClient
 from .memory.text_index import add_words
 from .memory.writer import ChatLine, ReplyRef
+from .optout import forget_everywhere
 from .profile.auto import ProfileUpdater
 from .profile.builder import ProfileBuilder
 from .profile.store import ProfileDB
@@ -175,7 +176,7 @@ class YukiBot(commands.Bot):
 
     def _all_optouts(self) -> set[str]:
         """打過 /不要記我 的人（不分在哪個伺服器打的）。"""
-        return {r[0] for r in self.archive.db.execute("SELECT DISTINCT user_id FROM optout")}
+        return self.archive.opted_out()
 
     def _optout_names(self) -> set[str]:
         """退出的人在 Yuki 所在各伺服器的名字（暱稱、帳號名、全域名稱），上網工具不准送出這些字。"""
@@ -899,19 +900,17 @@ def register_commands(bot: YukiBot) -> None:
         await interaction.response.defer(ephemeral=True)
         await send(interaction, text, [], ephemeral=True)
 
-    @bot.tree.command(name="不要記我", description="刪除你的人物檔案與封存的聊天紀錄，之後也不再整理你")
+    @bot.tree.command(name="不要記我", description="刪除你在所有伺服器的人物檔案、記憶與封存的聊天紀錄，之後也不再整理你")
     async def opt_out(interaction: discord.Interaction) -> None:
         gid = guild_key(interaction.guild, interaction.user)
         uid = str(interaction.user.id)
         await interaction.response.defer(ephemeral=True)
-        n = bot.archive.opt_out(gid, uid)
-        bot.sync.forget_skip(gid)
-        bot.voice.forget_user(gid, uid)
-        facts = ProfileDB(bot.settings.profile_db_path).forget(gid, uid)
-        had = bot.brain.profiles.delete(gid, uid)
+        f = forget_everywhere(uid, gid, archive=bot.archive, sync=bot.sync, voice=bot.voice,
+                              profile_db=ProfileDB(bot.settings.profile_db_path), profiles=bot.brain.profiles,
+                              memories=bot.brain.store)
         await interaction.followup.send(
-            f"好，已經刪掉你的檔案{'（有）' if had else '（本來就沒有）'}、{facts} 條整理過的資訊、"
-            f"{n} 則封存訊息，之後也不會再整理你。（對話中的事實記憶請用 /記憶 和 /忘記 管理）",
+            f"好，所有伺服器裡關於你的資料都刪掉了：人物檔案 {f.profiles} 份、整理過的資訊 {f.facts} 條、"
+            f"記憶 {f.memories} 筆、封存訊息 {f.messages} 則、語音紀錄 {f.voice} 筆。之後也不會再記你、整理你。",
             ephemeral=True)
 
     @bot.tree.command(name="來語音", description="叫 Yuki 進你所在的語音頻道")

@@ -178,6 +178,16 @@ class MemoryStore:
         self._dirty(mem.guild_id)
         return True
 
+    def forget_person(self, user_id: str) -> int:
+        """/不要記我：刪掉所有伺服器裡關於這個人、或由他的發言產生的記憶。回傳刪除筆數。"""
+        guilds = [r[0] for r in self.db.execute(
+            "SELECT DISTINCT guild_id FROM memories WHERE subject_id=? OR author_id=?", (user_id, user_id))]
+        n = self.db.execute("DELETE FROM memories WHERE subject_id=? OR author_id=?", (user_id, user_id)).rowcount
+        self.db.commit()
+        for g in guilds:
+            self._dirty(g)
+        return n
+
     def get(self, mem_id: str) -> Memory | None:
         row = self.db.execute(f"SELECT {_COLS} FROM memories WHERE id=?", (mem_id,)).fetchone()
         return Memory(*row) if row else None

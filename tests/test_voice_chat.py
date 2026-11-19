@@ -132,15 +132,20 @@ def test_spoken_prompt():
 
 
 def test_profile_falls_back_to_main_guild(tmp_path):
-    files = ProfileFiles(tmp_path)
-    files.write("main", "2", "# Toby\n喜歡打 LoL")
-    s = SimpleNamespace(profile_enabled=True, profile_max_people=4, profile_prompt_chars=500,
-                        profile_fallback_guild="main")
-    fake = SimpleNamespace(settings=s, profiles=files, history=defaultdict(deque))
-    out = Brain.pick_profiles(fake, "test", "c", Person("2", "Toby"))
-    assert out == [("Toby", "喜歡打 LoL")]
-    s.profile_fallback_guild = ""
-    assert Brain.pick_profiles(fake, "test", "c", Person("2", "Toby")) == []
+    """測試伺服器沒有這個人的檔案：借主伺服器的；沒設主伺服器就沒有。"""
+    from dataclasses import replace
+
+    from yuki.config import Settings
+    from yuki.memory.store import MemoryStore
+
+    def brain(fallback):
+        st = replace(Settings(), profile_enabled=True, profile_max_people=4, profile_prompt_chars=500,
+                     profile_fallback_guild=fallback, profile_dir=tmp_path)
+        return Brain(st, SimpleNamespace(), MemoryStore(":memory:", "fake"), None, None)
+
+    ProfileFiles(tmp_path).write("main", "2", "# Toby\n喜歡打 LoL")
+    assert brain("main").pick_profiles("test", "c", Person("2", "Toby")) == [("Toby", "喜歡打 LoL")]
+    assert brain("").pick_profiles("test", "c", Person("2", "Toby")) == []
 
 
 def test_profile_updater_skips_test_guilds():

@@ -140,16 +140,18 @@ class ArchiveDB:
     def commit(self) -> None:
         self.db.commit()
 
-    def opted_out(self, guild_id: str) -> set[str]:
-        return {r[0] for r in self.db.execute("SELECT user_id FROM optout WHERE guild_id=?", (guild_id,))}
+    def opted_out(self, guild_id: str | None = None) -> set[str]:
+        """打過 /不要記我 的人。以人為單位：在任何伺服器（或私訊）打的都算，guild_id 不影響結果
+        （參數留著給舊的呼叫端）。"""
+        return {r[0] for r in self.db.execute("SELECT DISTINCT user_id FROM optout")}
 
     def opt_out(self, guild_id: str, user_id: str) -> int:
-        """退出封存：刪掉這個人所有訊息，之後也不再收。回傳刪除筆數。"""
+        """退出封存：刪掉這個人在**所有伺服器**的訊息，之後也不再收。guild_id 只記錄是在哪裡打的。回傳刪除筆數。"""
         self.db.execute("INSERT OR IGNORE INTO optout VALUES (?, ?)", (guild_id, user_id))
         for table in ("msg_fts", "msg_bi"):
-            self.db.execute(f"DELETE FROM {table} WHERE rowid IN (SELECT id FROM messages WHERE guild_id=? AND author_id=?)",
-                            (guild_id, user_id))
-        n = self.db.execute("DELETE FROM messages WHERE guild_id=? AND author_id=?", (guild_id, user_id)).rowcount
+            self.db.execute(f"DELETE FROM {table} WHERE rowid IN (SELECT id FROM messages WHERE author_id=?)",
+                            (user_id,))
+        n = self.db.execute("DELETE FROM messages WHERE author_id=?", (user_id,)).rowcount
         self.db.commit()
         return n
 

@@ -110,9 +110,13 @@ class VoicePresence:
         self.events[guild_id].append(ev)
         return ev
 
-    def forget_user(self, guild_id: str, user_id: str) -> int:
-        """/不要記我：刪掉這個人的語音紀錄。"""
-        n = self.db.execute("DELETE FROM voice_sessions WHERE guild_id=? AND user_id=?", (guild_id, user_id)).rowcount
+    def forget_user(self, guild_id: str | None, user_id: str) -> int:
+        """/不要記我：刪掉這個人的語音紀錄（guild_id 是 None 就刪所有伺服器的）。"""
+        if guild_id is None:
+            n = self.db.execute("DELETE FROM voice_sessions WHERE user_id=?", (user_id,)).rowcount
+        else:
+            n = self.db.execute("DELETE FROM voice_sessions WHERE guild_id=? AND user_id=?",
+                                (guild_id, user_id)).rowcount
         self.db.commit()
         return n
 

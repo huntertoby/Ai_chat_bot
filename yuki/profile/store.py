@@ -88,8 +88,13 @@ class ProfileDB:
             self.db.execute("UPDATE facts SET merged=0 WHERE guild_id=?", (guild_id,))
         self.db.commit()
 
-    def forget(self, guild_id: str, subject_id: str) -> int:
-        n = self.db.execute("DELETE FROM facts WHERE guild_id=? AND subject_id=?", (guild_id, subject_id)).rowcount
+    def forget(self, guild_id: str | None, subject_id: str) -> int:
+        """刪掉關於這個人的資訊（guild_id 是 None 就刪所有伺服器的）。"""
+        if guild_id is None:
+            n = self.db.execute("DELETE FROM facts WHERE subject_id=?", (subject_id,)).rowcount
+        else:
+            n = self.db.execute("DELETE FROM facts WHERE guild_id=? AND subject_id=?",
+                                (guild_id, subject_id)).rowcount
         self.db.commit()
         return n
 
@@ -130,6 +135,12 @@ class ProfileFiles:
             p.unlink()
             return True
         return False
+
+    def delete_everywhere(self, user_id: str) -> int:
+        """刪掉這個人在每個伺服器（含私訊）的檔案，回傳刪了幾份。"""
+        if not self.root.is_dir():
+            return 0
+        return sum(self.delete(d.name, user_id) for d in self.root.iterdir() if d.is_dir())
 
     def for_prompt(self, guild_id: str, user_id: str, max_chars: int) -> str:
         """給回覆 prompt 用：拿掉標題行，太長就截斷（各節的重點寫在前面）。"""
