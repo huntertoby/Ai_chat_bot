@@ -16,18 +16,21 @@ META_PATTERNS = [
 ]
 _META = re.compile("|".join(META_PATTERNS))
 # 開頭用第三人稱轉述說話的人在幹嘛（「阿明在問…」「小美把…」後面接規劃），用說話者名字判斷
-NARRATE_VERBS = r"(?:在問|在講|在說|在抱怨|在鬧|在嘴|問我|說我|叫我)"
-NARRATE_TAIL = re.compile(r"就好|回一下|接話|回嘴|不用")
-# 對話紀錄格式：[名字] 內容（[貼圖:名稱] 是正常的貼圖語法）
-_CHAT_TAG = re.compile(r"\[(?!貼圖)[^\]\n]{1,32}\]\s*\S")
+NARRATE_VERBS = r"(?:在問|在講|在說|在抱怨|在鬧|在嘴|問我|說我|叫我|說|問|又問|講)"
+NARRATE_TAIL = re.compile(r"就好|回一下|接話|回嘴|不用|我(?:可以|要|就|來)?接|接這個|接梗")
+# 對話紀錄格式：行首的「[名字] 內容」（[貼圖:名稱] 是貼圖語法；markdown 連結 [字](網址)、句中的方括號不算）
+_CHAT_TAG = re.compile(r"(?m)^[ \t]*\[(?!貼圖)[^\]\n]{1,32}\][ \t]+\S")
 ECHO_MIN_CHARS = 6     # 對方那句（去掉空白標點）至少幾個字才比對，太短的（「好喔」）不算
 ECHO_RATIO = 0.5       # 照抄的部分佔回覆一半以上才算
 ECHO_LOOKBACK = 3      # 看最近幾則別人的訊息
 _STRIP = re.compile(r"[\s,，.。!！?？~～…、:：;；「」『』()（）\"'`*]+")
 
 
+_EMOJI = re.compile(r"<a?:\w+:\d+>|:\w+:")  # 群組表情不算照抄（大家本來就會按同一個）
+
+
 def _norm(text: str) -> str:
-    return _STRIP.sub("", text or "").lower()
+    return _STRIP.sub("", _EMOJI.sub("", text or "")).lower()
 
 
 def broken_reason(reply: str, *, others: list[tuple[str, str]] = ()) -> str:

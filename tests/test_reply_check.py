@@ -29,6 +29,10 @@ def test_narrating_the_speaker_then_planning_is_caught_but_plain_mentions_are_no
     assert broken_reason("阿明在問我比小傑還會打吧，查不到小傑。那就回一下", others=others) == "meta"
     assert broken_reason("阿明在問這個喔，我哪會打", others=others) == ""
     assert broken_reason("小傑在問你啦 不是我", others=others) == ""  # 不是說話的人
+    # R3 小評估漏掉的一則：「名字說…」轉述後接「我可以接」
+    assert broken_reason("阿明說紅軸打起來好爽，又問我是不是又在裝懂。我可以接這個玩笑。",
+                         others=[("阿明", "你是不是又在裝懂")]) == "meta"
+    assert broken_reason("阿明說的對啦 紅軸就是爽", others=[("阿明", "紅軸好爽")]) == ""
 
 
 def test_echo_of_recent_message_or_chat_format_is_caught():
@@ -43,12 +47,20 @@ def test_echo_of_recent_message_or_chat_format_is_caught():
     "客服？我哪有那麼有禮貌，你吃太鹹啦",
     "你講話好像客服喔？我才不是客服咧，我是專業陪聊，你那碗拉麵鹹到我都隔著螢幕口渴了",  # 引用但自己講更多
     "好喔 [貼圖:哭哭]",
+    "可以看這篇 [htmx](https://htmx.org/) 寫得滿好的",   # markdown 連結
+    "結果會是 [1, 2, 3] 啦",                               # 句中的方括號
     "幹嘛啦 你又不用查我",  # 「不用查」…是規則片語，見下一個測試
 ])
 def test_normal_replies_pass_except_rule_phrases(reply):
     others = [("小美", "你講話好像客服喔 笑死")]
     expected = "meta" if "不用查" in reply else ""
     assert broken_reason(reply, others=others) == expected
+
+
+def test_same_group_emoji_is_not_echo():
+    others = [("阿明", "<:emoji_34:123>")]
+    assert broken_reason(":emoji_34:", others=others) == ""
+    assert broken_reason("<:emoji_34:123>", others=others) == ""
 
 
 def test_short_messages_are_not_used_for_echo():
