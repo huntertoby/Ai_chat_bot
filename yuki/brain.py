@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections import defaultdict, deque
 from datetime import date
 from typing import Callable
@@ -10,7 +11,7 @@ from urllib.parse import unquote_plus
 
 import httpx
 
-from . import prompts, throttle, trace, vision
+from . import prompts, reply_check, throttle, trace, vision
 from .chat import ChatLine, Person
 from .config import Settings
 from .llm import LMStudioClient
@@ -162,19 +163,63 @@ def swear_note(lines: list[ChatLine]) -> str:
     return prompts.LATEST_NOTE_SWEAR_OK if others_swore(lines) else prompts.LATEST_NOTE_NO_SWEAR
 
 
-def reply_messages(system: str, lines: list[ChatLine], bot_name: str, mentions=()) -> list[dict]:
+def reply_messages(system: str, lines: list[ChatLine], bot_name: str, mentions=(), *, note: bool = True) -> list[dict]:
     """回覆用的 messages：system＋對話紀錄，最新一則 user 訊息後面用括號附上這次回覆的提示（latest_note）。
     R2 實測：提示放 system 最後時，她比較常去查聊天紀錄、開頭重複也壓不太下來，所以接在最新一則後面。
     D-36 髒話那句每次都要有：有其他提示時跟著一起附在後面；沒有（例如只有一句提問）就只放 system 最後，
-    單獨接一個括號在提問後面會讓查聊天紀錄變差（R2 實測）。"""
+    單獨接一個括號在提問後面會讓查聊天紀錄變差（R2 實測）。
+    note=False：不附提示（R3 回覆壞掉時的最後一招），髒話那句照樣放 system。"""
     msgs = to_messages(lines)
     if not lines or lines[-1].is_bot or not msgs or msgs[-1]["role"] != "user":
         return [{"role": "system", "content": system}] + msgs
-    if note := latest_note(lines, bot_name, mentions):
-        msgs[-1] = {**msgs[-1], "content": msgs[-1]["content"] + "\n\n（" + note + "）"}
+    if note and (text := latest_note(lines, bot_name, mentions)):
+        msgs[-1] = {**msgs[-1], "content": msgs[-1]["content"] + "\n\n（" + text + "）"}
     else:
         system += "\n\n" + swear_note(lines)
     return [{"role": "system", "content": system}] + msgs
+
+
+BROKEN_RETRIES = 1  # 回覆壞掉（reply_check）時，同樣的內容再生幾次；還是壞就不附提示再生一次，那次照用
+
+
+def recent_others(lines: list[ChatLine], n: int = 5) -> list[tuple[str, str]]:
+    """最近 n 則別人的訊息 [(名字, 內容)]，舊到新（給 reply_check 比對照抄、轉述）。"""
+    return [(l.author.name, l.text) for l in lines if not l.is_bot][-n:]
+
+
+async def checked_chat(gen, system: str, lines: list[ChatLine], bot_name: str, mentions=(), *,
+                       images=(), stats: dict | None = None) -> str:
+    """產生回覆，程式檢查有沒有壞掉（R3）：壞了就同樣的內容再生 BROKEN_RETRIES 次，
+    還是壞就不附「這次回覆」提示再生一次（R2 前的組法），那次不再檢查、照用。
+    gen：async (messages) -> 原始回覆文字。回傳已經拿掉開頭 [名字]、轉成台灣繁體的回覆。
+    stats：有給就記下 reasons（每次判壞的原因）、extra_ms（重生多花的毫秒）、fallback（有沒有用到最後一招）。"""
+    others = recent_others(lines)
+
+    async def once(note: bool) -> str:
+        msgs = vision.attach(reply_messages(system, lines, bot_name, mentions, note=note), list(images))
+        return to_traditional(_NAME_PREFIX.sub("", await gen(msgs)))
+
+    reply = await once(True)
+    reasons: list[str] = []
+    t0 = time.monotonic()
+    for attempt in range(BROKEN_RETRIES + 1):
+        why = reply_check.broken_reason(reply, others=others)
+        if not why:
+            break
+        reasons.append(why)
+        log.info("回覆壞掉（%s），重生：%r", why, reply[:60])
+        if tr := trace.current():
+            tr.degrade(f"broken_{why}")
+        if attempt < BROKEN_RETRIES:
+            reply = await once(True)
+        else:
+            reply = await once(False)
+            if stats is not None:
+                stats["fallback"] = True
+    if stats is not None:
+        stats["reasons"] = reasons
+        stats["extra_ms"] = round((time.monotonic() - t0) * 1000) if reasons else 0
+    return reply
 
 
 class Brain:
@@ -190,6 +235,7 @@ class Brain:
         # bot 設定：打過 /不要記我 的人（user ID）、他們在各伺服器的名字。不設就當沒有人退出
         self.opted_out: Callable[[], set[str]] = set
         self.optout_names: Callable[[], set[str]] = set
+        self.last_check: dict = {}  # 上一次回覆的壞掉檢查結果（checked_chat 的 stats；評估腳本讀）
 
     @classmethod
     def build(cls, settings: Settings) -> "Brain":
@@ -263,7 +309,6 @@ class Brain:
                                       voice=voice, spoken=spoken, owner=owner,
                                       archive=self.archive_db is not None, vision=bool(images),
                                       background=background, chimed=chimed, emoji=emoji)
-        messages = vision.attach(reply_messages(system, lines, s.bot_name, mentions), images)
 
         everyone = [author, *mentions, *members]
         specs: list[dict] = []
@@ -284,14 +329,18 @@ class Brain:
 
         rounds = s.voice_max_rounds if spoken else max(s.web_max_rounds, 3)
         log.info("人物檔案：%s", [n for n, _ in profiles])
-        if specs:
-            reply = await self.llm.chat_tools(messages, specs, call_tool, max_rounds=rounds)
-        else:
-            reply = await self.llm.chat(messages)
+
+        async def gen(messages):
+            if specs:
+                return await self.llm.chat_tools(messages, specs, call_tool, max_rounds=rounds)
+            return await self.llm.chat(messages)
+
+        # 程式檢查回覆有沒有壞掉、壞了重生（R3）；模型學對話紀錄格式在開頭加的 [名字] 也在裡面拿掉
+        self.last_check = {}
+        reply = await checked_chat(gen, system, lines, s.bot_name, mentions, images=images, stats=self.last_check)
         if tools is not None and tools.seen:
             log.info("查到的訊息：%d 則", len(set(tools.seen)))
-        # 模型有時學對話紀錄的格式，在開頭加上 [名字]
-        return to_traditional(_NAME_PREFIX.sub("", reply))
+        return reply
 
     def blocked_names(self, people) -> set[str]:
         """不准送上網的名字：打過 /不要記我 的人（bot 給的全部伺服器的名字，加上這次對話名單裡同一個人的名字）。"""
