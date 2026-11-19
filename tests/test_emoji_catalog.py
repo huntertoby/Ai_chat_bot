@@ -76,3 +76,110 @@ def test_revise_prompt_has_numbers_no_names():
     p = cat.revise_prompt([{"i": 1, "looks": "貓", "meaning": "草", "snippets": sn},
                            {"i": 2, "looks": "狗", "meaning": "草", "snippets": []}])
     assert "第 1 號" in p and "第 2 號" in p and "外觀：狗" in p
+
+
+# ---------------- C1-2：使用圖鑑 ----------------
+import json as _json
+
+ITEMS = [
+    {"id": "11", "name": "happy", "animated": False, "kind": "emoji", "uses": 50, "meaning": "開心的時候", "use": True},
+    {"id": "12", "name": "dance", "animated": True, "kind": "emoji", "uses": 40, "meaning": "", "looks": "一隻貓在跳舞", "use": True},
+    {"id": "13", "name": "e6fe004e190c4f83a2866f8631078c32", "animated": False, "kind": "emoji", "uses": 30,
+     "meaning": "傻眼無言", "use": True},
+    {"id": "14", "name": "off", "animated": False, "kind": "emoji", "uses": 99, "meaning": "不想被用", "use": False},
+    {"id": "15", "name": "blank", "animated": False, "kind": "emoji", "uses": 5, "meaning": "", "looks": "", "use": True},
+    {"id": "21", "name": "wave", "animated": False, "kind": "sticker", "uses": 0, "looks": "揮手的角色", "use": True},
+]
+
+
+def _set():
+    return cat.EmojiSet("g1", ITEMS)
+
+
+def test_only_use_true_with_description():
+    s = _set()
+    assert {e.name for e in s.entries} == {"happy", "dance", "e6fe004e190c4f83a2866f8631078c32", "wave"}
+    block = s.prompt_block()
+    assert ":happy: 開心的時候" in block and ":dance: 一隻貓在跳舞" in block and "[貼圖:wave]" in block
+    assert "off" not in block and "blank" not in block
+
+
+def test_hard_names_get_alias():
+    s = _set()
+    block = s.prompt_block()
+    assert "e6fe004e" not in block and ":e1: 傻眼無言" in block
+    text, st = s.process("好喔 :e1:")
+    assert text == "好喔 <:e6fe004e190c4f83a2866f8631078c32:13>" and st is None
+
+
+def test_process_replace_animated_and_delete_unknown():
+    s = _set()
+    assert s.process("哈 :dance:") == ("哈 <a:dance:12>", None)
+    assert s.process("哈 :nothing: 好") == ("哈 好", None)          # 壞名稱刪掉、空白收乾淨
+    assert s.process("現在 12:30:45 開會") == ("現在 12:30:45 開會", None)  # 時間不是表情
+    assert s.process(":off:") == ("", None)                           # use=false 當不存在
+
+
+def test_process_one_per_message():
+    s = _set()
+    text, st = s.process(":happy: 然後 :dance: 還有 :happy:")
+    assert text == "<:happy:11> 然後 還有" and st is None
+    text, st = s.process("好 [貼圖:wave]")  # 貼圖拿掉、另外回 ID
+    assert (text, st) == ("好", "21")
+    text, st = s.process(":happy: 好 [貼圖:wave]")  # 表情已經用掉，貼圖就不發
+    assert (text, st) == ("<:happy:11> 好", None)
+    text, st = s.process("好 [貼圖:wave] [貼圖:wave]")
+    assert (text, st) == ("好", "21")
+    assert s.process("[貼圖:不存在]") == ("", None)
+    assert s.process("<:fake:999> 好") == ("好", None)      # 不在圖鑑裡的完整寫法也刪
+    assert s.process("<:happy:11>") == ("<:happy:11>", None)
+
+
+def test_process_without_catalog_cleans_tags():
+    assert cat.process_reply("好 :smile: 啊 [貼圖:abc]", None) == ("好 啊", None)
+    assert cat.process_reply("看 <:a:1> 這個", None) == ("看 <:a:1> 這個", None)  # 本來就有的不動
+    assert cat.process_reply("普通文字 :) 沒事", None) == ("普通文字 :) 沒事", None)
+
+
+def test_duplicate_sticker_names_get_alias():
+    s = cat.EmojiSet("g", [{"id": "1", "name": "x", "kind": "sticker", "uses": 0, "looks": "甲"},
+                           {"id": "2", "name": "x", "kind": "sticker", "uses": 0, "looks": "乙"}])
+    assert [e.label for e in s.entries] == ["x", "s1"]
+
+
+def test_react_name():
+    s = _set()
+    assert s.react_name(":e1:") == (True, "e6fe004e190c4f83a2866f8631078c32")
+    assert s.react_name("happy") == (True, "happy")
+    assert s.react_name("<:happy:11>") == (True, "happy")
+    assert s.react_name("nothing") == (True, "")
+    assert s.react_name("👍") == (False, "👍")
+    assert "dance" in s.react_block() and "wave" not in s.react_block()
+
+
+def test_sync_removed_renamed_new():
+    from types import SimpleNamespace as NS
+    s = _set()
+    rep = s.sync([NS(id=11, name="happy2"), NS(id=12, name="dance"), NS(id=99, name="brand_new")])
+    assert rep["renamed"] == [("happy", "happy2")] and rep["new"] == ["brand_new"]
+    assert set(rep["removed"]) == {"e6fe004e190c4f83a2866f8631078c32", "wave"}
+    assert s.process(":happy2: :happy:") == ("<:happy2:11>", None)
+
+
+def test_reviewed_false_not_used(tmp_path):
+    p = tmp_path / "g1.json"
+    p.write_text(_json.dumps(ITEMS), encoding="utf-8")
+    assert cat.load_all(tmp_path) == {}                        # 沒有 meta 檔＝沒看過
+    cat.ensure_meta(p)
+    assert _json.loads(cat.meta_path(p).read_text()) == {"reviewed": False}
+    assert cat.load_all(tmp_path) == {}
+    cat.meta_path(p).write_text('{"reviewed": true}')
+    cat.ensure_meta(p)                                          # 重建圖鑑不會把 true 改回去
+    assert list(cat.load_all(tmp_path)) == ["g1"]
+    assert cat.load_set(p, require_reviewed=False) is not None
+
+
+def test_load_dict_format_and_broken(tmp_path):
+    (tmp_path / "g2.json").write_text(_json.dumps({"reviewed": True, "items": ITEMS}), encoding="utf-8")
+    (tmp_path / "g3.json").write_text("{壞掉", encoding="utf-8")
+    assert list(cat.load_all(tmp_path)) == ["g2"]

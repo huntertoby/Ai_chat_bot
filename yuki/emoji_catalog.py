@@ -1,12 +1,24 @@
-"""表情圖鑑的邏輯（開發規格 6.14 第 1 點）：算使用次數、抽樣對話、合併舊資料、產生檢查頁。
-一次性工具 scripts/build_emoji_catalog.py 用它；Yuki 本體不 import。"""
+"""表情圖鑑的邏輯（開發規格 6.14）：
+- 建圖鑑（scripts/build_emoji_catalog.py 用）：算使用次數、抽樣對話、合併舊資料、產生檢查頁。
+- 使用圖鑑（Yuki 本體用，C1-2）：讀 data/emoji/*.json、產生 prompt 用的清單、把回覆裡的 `:名稱:`／`[貼圖:名稱]` 換成 Discord 格式。
+
+`reviewed`：圖鑑檔本身維持最上層是 list（C1-1 的格式不變），是否看過放在旁邊的 `<伺服器ID>.meta.json`
+（`{"reviewed": false}`）。沒有 meta 檔＝沒看過；**只有 reviewed 是 true 的圖鑑 Yuki 才會用**。
+（載入時也接受 `{"reviewed": ..., "items": [...]}` 這種單一檔案的寫法。）"""
 from __future__ import annotations
 
 import html
+import json
+import logging
 import re
 import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 
+log = logging.getLogger(__name__)
+
+EMOJI_DIR = Path(__file__).resolve().parent.parent / "data" / "emoji"
 CUSTOM_EMOJI = re.compile(r"<(a?):(\w+):(\d+)>")
 MAX_SAMPLES = 15
 CONTEXT = 3
@@ -174,3 +186,227 @@ tr.top{{background:#fff7d6}} td.n{{text-align:right}} small{{color:#666}}
 {rows_html}
 </tbody></table></body></html>
 """
+
+
+# ====================== 使用圖鑑（C1-2）======================
+META_SUFFIX = ".meta.json"
+DESC_CHARS = 60
+PROMPT_EMOJI = 22      # reply prompt 放幾張表情（最常用的）
+PROMPT_STICKERS = 4    # 另外最多放幾張貼圖（貼圖沒有使用次數，用 looks/meaning 判斷）
+REACT_N = 10           # 插話判斷放幾張
+
+_SHORT = re.compile(r"(?<![\w:]):(\w{1,40}):(?![\w:])")
+_STICKER_TAG = re.compile(r"[\[［]\s*貼圖\s*[:：]\s*([^\]］\n]{1,40}?)\s*[\]］]")
+_ANY = re.compile(r"<(a?):(\w+):(\d+)>|" + _SHORT.pattern + "|" + _STICKER_TAG.pattern)
+_HEXISH = re.compile(r"[0-9a-fA-F]{12,}")
+_PLAIN = re.compile(r"[A-Za-z0-9_一-鿿]+")
+
+
+def meta_path(path: Path) -> Path:
+    return path.with_name(path.stem + META_SUFFIX)
+
+
+def read_reviewed(path: Path) -> bool:
+    try:
+        return json.loads(meta_path(path).read_text(encoding="utf-8")).get("reviewed") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def ensure_meta(path: Path) -> None:
+    """建圖鑑時呼叫：沒有 meta 檔就建一個 reviewed=false；已經有的（含人工改成 true 的）不動。"""
+    mp = meta_path(path)
+    if not mp.exists():
+        mp.write_text(json.dumps({"reviewed": False}, indent=1), encoding="utf-8")
+
+
+def hard_to_say(name: str) -> bool:
+    """名稱太難念：非中英數底線、太長、一長串十六進位或數字（隨機字串、相機檔名之類）。"""
+    return (not _PLAIN.fullmatch(name) or len(name) > 20 or bool(_HEXISH.search(name))
+            or bool(re.search(r"\d{6,}", name)))
+
+
+def describe(item: dict) -> str:
+    text = " ".join((item.get("meaning") or item.get("looks") or "").split())
+    return text[:DESC_CHARS]
+
+
+@dataclass
+class Entry:
+    id: str
+    name: str
+    kind: str          # emoji / sticker
+    animated: bool
+    uses: int
+    desc: str
+    alias: str = ""    # 名稱難念時給模型看的別名
+
+    @property
+    def label(self) -> str:
+        return self.alias or self.name
+
+    def render(self) -> str:
+        return f"<{'a' if self.animated else ''}:{self.name}:{self.id}>"
+
+
+class EmojiSet:
+    """某一個伺服器自己的、可以用的表情與貼圖（use=true 且有 meaning 或 looks）。"""
+
+    def __init__(self, guild_id: str, items: Iterable[dict]):
+        self.guild_id = str(guild_id)
+        entries = [Entry(str(i["id"]), str(i["name"]), i.get("kind", "emoji"), bool(i.get("animated")),
+                         int(i.get("uses", 0) or 0), describe(i))
+                   for i in items if i.get("use", True) and describe(i) and i.get("id") and i.get("name")]
+        entries.sort(key=lambda e: (-e.uses, e.name))
+        taken = {e.name.lower() for e in entries}
+        counters = {"emoji": 0, "sticker": 0}
+        seen: set[tuple[str, str]] = set()
+        for e in entries:
+            dup = (e.kind, e.name.lower()) in seen  # 同名（貼圖常見）：後面的給別名，不然分不出來
+            seen.add((e.kind, e.name.lower()))
+            if hard_to_say(e.name) or dup:
+                prefix = "e" if e.kind == "emoji" else "s"
+                while True:
+                    counters[e.kind] += 1
+                    cand = f"{prefix}{counters[e.kind]}"
+                    if cand not in taken:
+                        break
+                e.alias = cand
+                taken.add(cand)
+        self.entries = entries
+        self._index()
+
+    def _index(self) -> None:
+        self._by_key: dict[tuple[str, str], Entry] = {}
+        self._by_id: dict[str, Entry] = {}
+        for e in self.entries:
+            for key in {e.name.lower(), e.alias.lower()} - {""}:
+                self._by_key[(e.kind, key)] = e
+            self._by_id[e.id] = e
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    def _top(self, kind: str, n: int) -> list[Entry]:
+        return [e for e in self.entries if e.kind == kind][:n]
+
+    def lines(self, entries: list[Entry]) -> str:
+        return "\n".join(f":{e.label}: {e.desc}" if e.kind == "emoji" else f"[貼圖:{e.label}] {e.desc}"
+                         for e in entries)
+
+    def prompt_block(self) -> str:
+        """回覆 system 用的清單（空字串＝沒有可用的）：最常用的表情，加上最多幾張貼圖。"""
+        return self.lines(self._top("emoji", PROMPT_EMOJI) + self._top("sticker", PROMPT_STICKERS))
+
+    def react_block(self, n: int = REACT_N) -> str:
+        """插話判斷用：最常用的 n 張表情，一行一張。"""
+        return "\n".join(f":{e.label}: {e.desc}" for e in self._top("emoji", n))
+
+    def react_name(self, emoji: str) -> tuple[bool, str]:
+        """模型在 emoji 欄寫的東西 → (是不是群組表情的名稱, 真正的名稱)。
+        名稱（含別名、`:名稱:`、`<:名稱:ID>`）找得到回 (True, 真名)；看起來是名稱但圖鑑裡沒有回 (True, "")；
+        其他（unicode 表情）回 (False, 原文)。"""
+        e = (emoji or "").strip()
+        m = re.fullmatch(r"<a?:(\w+):\d+>", e)
+        name = (m.group(1) if m else e.strip(":")).strip()
+        hit = self._by_key.get(("emoji", name.lower()))
+        if hit:
+            return True, hit.name
+        if m or re.search(r"[A-Za-z0-9_]", e) or len(e) > 8:
+            return True, ""
+        return False, e
+
+    def process(self, text: str) -> tuple[str, str | None]:
+        return process_reply(text, self)
+
+    def sync(self, emojis: Iterable, stickers: Iterable = ()) -> dict:
+        """跟伺服器現況比對：圖鑑有、伺服器已刪的不再使用；改名的換成新名字；伺服器新增的只記下來（這次不補建）。
+        emojis／stickers 是有 id、name 的物件（guild.emojis、guild.stickers）。"""
+        live = {str(o.id): o for o in [*emojis, *stickers]}
+        report = {"removed": [], "renamed": [], "new": [str(o.name) for i, o in live.items() if i not in self._by_id]}
+        keep = []
+        for e in self.entries:
+            o = live.get(e.id)
+            if o is None:
+                report["removed"].append(e.name)
+                continue
+            if str(o.name) != e.name:
+                report["renamed"].append((e.name, str(o.name)))
+                e.name = str(o.name)
+            keep.append(e)
+        self.entries = keep
+        self._index()
+        return report
+
+
+def process_reply(text: str, eset: "EmojiSet | None") -> tuple[str, str | None]:
+    """回覆後處理：`:名稱:`→`<:名稱:ID>`；不在圖鑑裡的 `:xxx:`、`[貼圖:xxx]` 刪掉；
+    一則最多 1 個表情或 1 張貼圖（照出現順序，第一個有效的留下）。回傳 (文字, 貼圖 ID 或 None)。
+    eset=None（沒有圖鑑、沒 reviewed、或這個伺服器不開放）：`:xxx:`、`[貼圖:…]` 一律清掉，其他不動。"""
+    sticker: str | None = None
+    used = False
+    changed = False
+
+    def sub(m: re.Match) -> str:
+        nonlocal sticker, used, changed
+        raw_id, short, tag = m.group(3), m.group(4), m.group(5)
+        if raw_id is not None:  # 模型自己寫（或學對話紀錄）的 <:名稱:ID>
+            if eset is None:
+                return m.group(0)
+            e = eset._by_id.get(raw_id)
+            kind, entry = "emoji", (e if e and e.kind == "emoji" else None)
+        elif short is not None:
+            entry = eset._by_key.get(("emoji", short.lower())) if eset else None
+            kind = "emoji"
+        else:
+            entry = eset._by_key.get(("sticker", tag.strip().lower())) if eset else None
+            kind = "sticker"
+        changed = True
+        if entry is None or used:
+            return ""
+        used = True
+        if kind == "sticker":
+            sticker = entry.id
+            return ""
+        return entry.render()
+
+    out = _ANY.sub(sub, text or "")
+    if changed:
+        out = re.sub(r"[ \t]{2,}", " ", out)
+        out = re.sub(r" +\n", "\n", out).strip()
+    return out, sticker
+
+
+def _items_of(path: Path):
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict):
+        return data.get("items", []), data.get("reviewed") is True
+    return data, read_reviewed(path)
+
+
+def load_set(path: Path, *, require_reviewed: bool = True) -> EmojiSet | None:
+    """讀一份圖鑑；沒 reviewed（且 require_reviewed）、檔案壞掉、沒有可用的都回 None。評估腳本用 require_reviewed=False 直接指到檔案。"""
+    try:
+        items, reviewed = _items_of(path)
+    except (OSError, ValueError):
+        log.warning("表情圖鑑讀不了：%s", path.name, exc_info=True)
+        return None
+    if require_reviewed and not reviewed:
+        return None
+    eset = EmojiSet(path.stem, items)
+    return eset if len(eset) else None
+
+
+def load_all(directory: Path = EMOJI_DIR) -> dict[str, EmojiSet]:
+    """啟動時讀 `*.json`（不含 .meta.json）；只留 reviewed 的。回傳 {伺服器ID: EmojiSet}。"""
+    out: dict[str, EmojiSet] = {}
+    for p in sorted(directory.glob("*.json")):
+        if p.name.endswith(META_SUFFIX):
+            continue
+        eset = load_set(p)
+        if eset is None:
+            log.info("表情圖鑑 %s 沒有 reviewed 或沒有可用的項目，不使用", p.name)
+            continue
+        out[p.stem] = eset
+        log.info("表情圖鑑 %s：可用 %d 張", p.name, len(eset))
+    return out

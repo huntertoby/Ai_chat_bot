@@ -160,6 +160,7 @@ def save(items: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
     path.with_name(path.stem + "-檢查.html").write_text(cat.render_html(items), encoding="utf-8")
+    cat.ensure_meta(path)  # reviewed=false；已經有的不動（使用者看過後由開發 PM 改成 true）
 
 
 async def run(args) -> None:

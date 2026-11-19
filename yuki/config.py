@@ -231,6 +231,10 @@ class Settings:
     chime_react_max: int = field(default_factory=lambda: _int("CHIME_REACT_MAX", 3))
     chime_react_window_min: float = field(default_factory=lambda: _float("CHIME_REACT_WINDOW_MIN", 10))
 
+    # ---- 群組表情與貼圖（開發規格 6.14，C1-2）----
+    # 哪些伺服器可以用自己的表情圖鑑；留空＝只有 TEST_GUILD_IDS（主伺服器要另外決定）。圖鑑還要 reviewed 才會用
+    emoji_guild_ids: list[str] = field(default_factory=lambda: _list("EMOJI_GUILD_IDS", ""))
+
     db_path: Path = field(default_factory=lambda: ROOT / _str("DB_PATH", "data/yuki.db"))
     log_level: str = field(default_factory=lambda: _str("LOG_LEVEL", "INFO"))
 
