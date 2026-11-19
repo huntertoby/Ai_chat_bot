@@ -22,7 +22,7 @@ def fake_on_message(*, active=False, chiming=False, called=False, chime_ok=True,
                     **settings):
     s = replace(Settings(), **{"vision_enabled": False, "chime_in": level, **settings})
     clk = Clock()
-    ev = NS(scheduled=[], called=[], recorded=[], buffered=[], observed=[])
+    ev = NS(scheduled=[], called=[], recorded=[], buffered=[], observed=[], triggers=[])
     me = NS(settings=s, _last_activity=0.0, is_test_guild=lambda g: test_guild, user=NS(id=99),
             sync=NS(record=lambda m: ev.recorded.append(m)), clean=lambda m: m.content,
             is_called=lambda m: called, active_until={}, chime_until={},
@@ -33,8 +33,9 @@ def fake_on_message(*, active=False, chiming=False, called=False, chime_ok=True,
             chime_allowed=lambda g: chime_ok,
             _schedule_chime=lambda m, l, attention: ev.scheduled.append(attention))
 
-    async def on_called(message, author, text, mentions, *, count_tag=True):
+    async def on_called(message, author, text, mentions, *, count_tag=True, trigger="called"):
         ev.called.append((text, count_tag))
+        ev.triggers.append(trigger)
 
     me._on_called = on_called
     if active:

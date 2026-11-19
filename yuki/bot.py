@@ -66,6 +66,31 @@ def person(member: discord.abc.User) -> Person:
     return Person(str(member.id), getattr(member, "display_name", None) or member.name)
 
 
+def wake_pattern(words: list[str]) -> re.Pattern:
+    """喚醒詞：英數字的詞要整個字相符（前後不是英文字母或數字），中文照字比對；不分大小寫。"""
+    parts = []
+    for w in words:
+        if not w:
+            continue
+        if w.isascii() and any(c.isalnum() for c in w):
+            parts.append(r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])")
+        else:
+            parts.append(re.escape(w))
+    return re.compile("|".join(parts) or r"(?!x)x", re.IGNORECASE)
+
+
+_NOT_WORD = re.compile(r"[\W_]+")  # 標點、空白、表情符號
+
+
+def is_exit(text: str, exit_words: list[str]) -> bool:
+    """叫她離開：整句（去掉喚醒詞、標點、表情後）就是結束字之一才算；句子裡夾著結束字不算。"""
+    core = _NOT_WORD.sub("", text or "").lower()
+    return bool(core) and core in {_NOT_WORD.sub("", w).lower() for w in exit_words}
+
+
+EXIT_REPLY = "好的，我先去旁邊休息囉！有事再叫我～"
+
+
 @dataclass
 class Turn:
     """一次要回覆的事：回覆哪則訊息、誰說的。被叫到排隊的、自己決定插話的都用這個。"""
@@ -87,7 +112,9 @@ class Turn:
         for t in turns:
             for m in t.mentions:
                 people.setdefault(m.id, m)
-        return Turn(last.message, last.author, last.text, list(people.values()), trigger="called")
+        # 有任何一則是真的叫她才算 called（會延長注意時間）；全部是注意模式接話的就維持原本的 trigger
+        trigger = "called" if any(t.trigger == "called" for t in turns) else last.trigger
+        return Turn(last.message, last.author, last.text, list(people.values()), trigger=trigger)
 
 
 class YukiBot(commands.Bot):
@@ -111,7 +138,7 @@ class YukiBot(commands.Bot):
         self.active_until: dict[int, float] = {}   # 被叫到之後的注意模式
         self.chime_until: dict[int, float] = {}    # 她自己插話之後的注意時間（只影響閉嘴判斷和插話的 attention 提示）
         self._members: dict[int, list[Person]] = {}
-        self._wake = re.compile("|".join(re.escape(w) for w in settings.wake_words), re.IGNORECASE)
+        self._wake = wake_pattern(settings.wake_words)
         self._synced = False
         # B3 節流、B2 插話判斷的硬限制
         self.throttle = throttle.Throttle(throttle.ThrottleConfig(
@@ -530,10 +557,8 @@ class YukiBot(commands.Bot):
             self.limits.mute(cid)
             log.info("被叫閉嘴，頻道 %s 在 %.0f 分鐘內不主動插話", cid, s.chime_mute_minutes)
 
-        if active and any(w in message.content for w in s.exit_words):
-            self.active_until.pop(cid, None)
-            await message.reply("好的，我先去旁邊休息囉！有事再叫我～", mention_author=False)
-            return
+        # 叫她走：只看跟她講的話（叫她、回覆她），整句就是結束字才算
+        leaving = called and (active or chiming) and is_exit(text, s.exit_words)
 
         if s.vision_enabled and (called or active):
             await vision.wait_for_embeds(message)  # 連結預覽是 Discord 事後補上的（訊息編輯），等一下
@@ -548,15 +573,24 @@ class YukiBot(commands.Bot):
             if self.brain.observe(channel_key, line) and (called or active or (s.passive_enabled and not test)):
                 self.brain.buffer(gid, channel_key, line, mentions)
 
+        if leaving:  # 那句已經進對話紀錄了，她的道別也記進去
+            self._cancel_debounce(cid)
+            self.active_until.pop(cid, None)
+            self.chime_until.pop(cid, None)
+            await message.reply(EXIT_REPLY, mention_author=False)
+            self.brain.observe(channel_key, ChatLine(Person(str(self.user.id), s.bot_name), EXIT_REPLY, is_bot=True))
+            return
+
         if called:
             self._cancel_debounce(cid)  # 有人叫她，不用再判斷要不要插話
             await self._on_called(message, author, text, mentions)
             return
         if message.guild is not None and not self.chime_allowed(message.guild):
-            # 還沒開插話的伺服器（預設＝測試伺服器以外，例如主伺服器）：維持舊行為，注意模式內照樣回
+            # 還沒開插話的伺服器（預設＝測試伺服器以外，例如主伺服器）：注意模式內接著回，
+            # 但跟被叫一樣走熱鬧模式（頻道很吵時收集起來合併回），而且這種回覆不會再延長注意時間
             if (active and line is not None and not throttle.is_noise_text(text, s.noise_max_chars)
                     and not self.throttle.tag_cooling(author.id)):  # 洗版冷卻中的人，注意模式也不回
-                await self._on_called(message, author, text, mentions, count_tag=False)
+                await self._on_called(message, author, text, mentions, count_tag=False, trigger="attention")
             return
         # 沒被叫到：先過雜訊過濾，再排進插話判斷（注意模式只是多一個提示，不是必回）
         if (line is None or not self.limits.enabled or message.guild is None
@@ -567,9 +601,10 @@ class YukiBot(commands.Bot):
 
     # ---------- 被叫到：節流、排隊、回覆 ----------
     async def _on_called(self, message: discord.Message, author: Person, text: str, mentions: list[Person],
-                         *, count_tag: bool = True) -> None:
+                         *, count_tag: bool = True, trigger: str = "called") -> None:
+        """count_tag：算不算這個人「叫她」的次數（單人洗版限制）。注意模式接話不算，但頻道熱鬧模式照算。"""
         cid = message.channel.id
-        gate_ok = self.throttle.note_call(cid) if count_tag else True  # 頻道層級：每次被叫都算，包含被單人限制擋掉的
+        gate_ok = self.throttle.note_call(cid)  # 頻道層級：每次都算，包含被單人限制擋掉的
         if count_tag and not self.throttle.note_tag(author.id):
             dropped = self.throttle.drop_queued(cid, lambda t: t.author.id == author.id)
             log.info("%s 一直叫她（洗版），不回（排隊中的 %d 則也丟掉）", author.name, dropped)
@@ -577,7 +612,7 @@ class YukiBot(commands.Bot):
         if not text:
             await message.reply("找我有事嗎？", mention_author=False)
             return
-        turn = Turn(message, author, text, mentions, trigger="called")
+        turn = Turn(message, author, text, mentions, trigger=trigger)
         if not gate_ok:  # 熱鬧模式：先收集，離上次回覆滿 gap 秒再合成一次回
             self.throttle.enqueue(cid, turn)
             if not self.throttle.is_busy(cid):
@@ -646,15 +681,15 @@ class YukiBot(commands.Bot):
         s = self.settings
         gid, cid = guild_key(message.guild, message.author), message.channel.id
         channel_key = str(cid)
-        if turn.trigger == "called":
+        if turn.trigger == "called":  # 只有真的被叫才延長注意時間（注意模式接話、插話不算）
             self.active_until[cid] = time.monotonic() + s.attention_timeout
         self._replying += 1
-        tr = trace.start("reply", guild=message.guild.id if message.guild else "", channel=cid,
-                         trigger=turn.trigger, user_ids=[author.id, *(m.id for m in mentions)])
-        self._hide_optouts(tr, channel_key, self._replied_person(message))
-        eset = self.emoji_set(message.guild)
-        emoji_ok = eset is not None and self.emoji_pacing.allow(cid)  # 剛用過就這則不放清單
-        try:
+        try:  # 計數一定要減回來：中間任何一步丟例外都不能讓 _replying 卡在 > 0
+            tr = trace.start("reply", guild=message.guild.id if message.guild else "", channel=cid,
+                             trigger=turn.trigger, user_ids=[author.id, *(m.id for m in mentions)])
+            self._hide_optouts(tr, channel_key, self._replied_person(message))
+            eset = self.emoji_set(message.guild)
+            emoji_ok = eset is not None and self.emoji_pacing.allow(cid)  # 剛用過就這則不放清單
             async with tr:
                 async with message.channel.typing():
                     await self._fill_reply_refs(message.channel)
@@ -834,21 +869,23 @@ def register_commands(bot: YukiBot) -> None:
         for chunk in split_message("\n".join([header, *lines])):
             await interaction.followup.send(chunk, ephemeral=ephemeral, allowed_mentions=NO_PING)
 
-    @bot.tree.command(name="記憶", description="看自己或某人的記憶；填關鍵字則用完整檢索流程搜尋")
+    @bot.tree.command(name="記憶", description="看自己或某人的記憶；填關鍵字則用完整檢索流程搜尋（只有你看得到）")
     @app_commands.describe(對象="要看誰的記憶（不填就是自己）", 關鍵字="語意搜尋，例如：大熊 昨天 頸椎")
     async def memories(interaction: discord.Interaction, 對象: discord.Member | None = None,
                        關鍵字: str | None = None) -> None:
-        await interaction.response.defer(thinking=True)  # 檢索 + LLM 重排可能超過 3 秒
+        # 只有本人看得到：結果可能含別人的事、或別的伺服器（測試伺服器借主伺服器）的聊天紀錄
+        await interaction.response.defer(thinking=True, ephemeral=True)  # 檢索 + LLM 重排可能超過 3 秒
         gid = guild_key(interaction.guild, interaction.user)
         text = (關鍵字 or "").strip()
         if not text:
             who = 對象 or interaction.user
             mems = store.list(gid, str(who.id))[:30]
             if not mems:
-                await interaction.followup.send(f"我還沒有記住關於 {who.display_name} 的事喔！")
+                await interaction.followup.send(f"我還沒有記住關於 {who.display_name} 的事喔！", ephemeral=True,
+                                                allowed_mentions=NO_PING)
                 return
             await send(interaction, f"**關於 {who.display_name} 的記憶（{len(mems)} 筆）**",
-                       [f"`{m.id}` ({m.created_at[:10]}) {m.text}" for m in mems])
+                       [f"`{m.id}` ({m.created_at[:10]}) {m.text}" for m in mems], ephemeral=True)
             return
         if bot.brain.agentic:
             # 封存區全文檢索（跟 Yuki 的 search_chat 同一套）
@@ -856,7 +893,7 @@ def register_commands(bot: YukiBot) -> None:
                                             bot.members_of(interaction.guild))
             hits = tools.search(text.split(), person=對象.display_name if 對象 else "")
             await send(interaction, f"**聊天紀錄裡的「{text}」**",
-                       [h.line() for h in sorted(hits, key=lambda h: h.id)] or ["（找不到）"])
+                       [h.line() for h in sorted(hits, key=lambda h: h.id)] or ["（找不到）"], ephemeral=True)
             return
         mentions = [person(對象)] if 對象 and not 對象.bot else []
         subs = await decompose(text, person(interaction.user), mentions, bot.members_of(interaction.guild),
@@ -872,7 +909,7 @@ def register_commands(bot: YukiBot) -> None:
                 lines.append(f"`{h.memory.id}` ({h.memory.created_at[:10]}) {h.memory.text}{score}")
             if not hits:
                 lines.append("（沒有相關記憶）")
-        await send(interaction, f"**「{text}」的搜尋結果**", lines)
+        await send(interaction, f"**「{text}」的搜尋結果**", lines, ephemeral=True)
 
     @bot.tree.command(name="忘記", description="刪除一筆記憶（只能刪關於自己的，管理員除外）")
     @app_commands.describe(記憶id="記憶前面的 8 碼 ID，用 /記憶 查")
@@ -887,7 +924,8 @@ def register_commands(bot: YukiBot) -> None:
             await interaction.response.send_message("只能刪除關於自己的記憶喔（管理員除外）。", ephemeral=True)
             return
         store.delete(mem.id)
-        await interaction.response.send_message(f"已忘記：{mem.text}", allowed_mentions=NO_PING)
+        # 不重述內容：要刪的東西不該再被貼出來一次
+        await interaction.response.send_message(f"已忘記這筆記憶（`{mem.id}`）。", ephemeral=True)
 
     @bot.tree.command(name="檔案", description="看 Yuki 整理的人物檔案（只有你看得到）")
     @app_commands.describe(對象="要看誰的檔案（不填就是自己）")

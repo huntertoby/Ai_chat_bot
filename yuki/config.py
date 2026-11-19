@@ -45,9 +45,9 @@ class Settings:
     exit_words: list[str] = field(default_factory=lambda: _list("EXIT_WORDS", "掰掰,再見,退下,去睡覺,閉嘴"))
 
     # ---- LM Studio（OpenAI 相容 API）----
-    lmstudio_base_url: str = field(default_factory=lambda: _str("LMSTUDIO_BASE_URL", "http://192.168.0.75:1234/v1"))
-    # 留空 = 自動抓 LM Studio 目前第一個非 embedding 模型
-    llm_model: str = field(default_factory=lambda: _str("LLM_MODEL"))
+    lmstudio_base_url: str = field(default_factory=lambda: _str("LMSTUDIO_BASE_URL", "http://127.0.0.1:8001/v1"))
+    # 正式環境用的模型；設成空字串 = 自動抓 LM Studio 目前第一個非 embedding 模型
+    llm_model: str = field(default_factory=lambda: _str("LLM_MODEL", "swift-1.5-qwen3.8-27b-uncensored-dynamic-mtp@iq4_xs"))
     llm_temperature: float = field(default_factory=lambda: _float("LLM_TEMPERATURE", 0.7))
     llm_max_tokens: int = field(default_factory=lambda: _int("LLM_MAX_TOKENS", 2048))
     llm_timeout: float = field(default_factory=lambda: _float("LLM_TIMEOUT", 180))
@@ -56,7 +56,7 @@ class Settings:
     llm_max_concurrency: int = field(default_factory=lambda: _int("LLM_MAX_CONCURRENCY", 1))
     # 推理模型（Qwen3 系列等）會先想再答，想太久會很慢甚至逾時。
     # none / low / medium / high；留空則不送這個參數（非推理模型或其他後端）
-    llm_reasoning_effort: str = field(default_factory=lambda: _str("LLM_REASONING_EFFORT", "low"))
+    llm_reasoning_effort: str = field(default_factory=lambda: _str("LLM_REASONING_EFFORT", "none"))
     llm_json_reasoning_effort: str = field(default_factory=lambda: _str("LLM_JSON_REASONING_EFFORT", "low"))
 
     # ---- Embedding ----
@@ -151,7 +151,7 @@ class Settings:
     # ---- 檢索方式（開發規格 6.4）----
     # agentic：Yuki 自己用工具查封存區（不載入 embedding / reranker，省 2.8 GB 顯存）
     # embedding：舊的每句先檢索事實記憶（bge-m3 + reranker）
-    retrieval: str = field(default_factory=lambda: _str("RETRIEVAL", "embedding"))
+    retrieval: str = field(default_factory=lambda: _str("RETRIEVAL", "agentic"))
     # 語音一次回覆最多幾輪工具呼叫（每輪 +0.6～1 秒）
     voice_max_rounds: int = field(default_factory=lambda: _int("VOICE_MAX_ROUNDS", 1))
 
@@ -162,16 +162,16 @@ class Settings:
     profile_fallback_guild: str = field(default_factory=lambda: _str("PROFILE_FALLBACK_GUILD"))
 
     # ---- 語音對話（開發規格 6.0）----
-    voice_enabled: bool = field(default_factory=lambda: _bool("VOICE_ENABLED", False))
+    voice_enabled: bool = field(default_factory=lambda: _bool("VOICE_ENABLED", True))
     voice_guild_ids: list[str] = field(default_factory=lambda: _list("VOICE_GUILD_IDS", ""))
     # 只聽這些 user ID；其他人的聲音直接丟掉，不轉文字、不存
     voice_listen_users: list[str] = field(default_factory=lambda: _list("VOICE_LISTEN_USERS", ""))
     voice_log_channel: str = field(default_factory=lambda: _str("VOICE_LOG_CHANNEL"))
-    voice_asr_model: str = field(default_factory=lambda: _str("VOICE_ASR_MODEL", "Qwen/Qwen3-ASR-0.6B"))
+    voice_asr_model: str = field(default_factory=lambda: _str("VOICE_ASR_MODEL", "Qwen/Qwen3-ASR-1.7B"))
     # 給 ASR 的常用詞提示（人名會自動加）
     voice_asr_hotwords: list[str] = field(default_factory=lambda: _list(
-        "VOICE_ASR_HOTWORDS", "LoL,ADC,打野,開黑,Luna,Jinx,Ezreal,patch,system prompt"))
-    voice_tts: str = field(default_factory=lambda: _str("VOICE_TTS", "edge"))
+        "VOICE_ASR_HOTWORDS", "LoL,ADC,打野,開黑,Luna,Jinx,Ezreal,patch,system prompt,TTS,ASR,AI,Discord,語音辨識"))
+    voice_tts: str = field(default_factory=lambda: _str("VOICE_TTS", "breezy"))
     voice_tts_voice: str = field(default_factory=lambda: _str("VOICE_TTS_VOICE", "zh-TW-HsiaoChenNeural"))
     # VOICE_TTS=breezy：WSL 裡的 scripts/breezy_server.py；連不上時自動改用 Edge
     voice_tts_url: str = field(default_factory=lambda: _str("VOICE_TTS_URL", "http://127.0.0.1:8890"))
