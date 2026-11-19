@@ -229,9 +229,10 @@ class ReplyScheduler:
         except Exception:
             log.exception("插話判斷失敗")
 
-    def chime_gate(self, cid: Any, *, attention: bool, llm_busy: bool) -> str | None:
-        """呼叫模型判斷之前的限制。回傳不判斷的原因，None＝可以判斷。"""
-        return (self.limits.gate(cid, attention=attention)
+    def chime_gate(self, cid: Any, *, attention: bool, llm_busy: bool, named: bool = False) -> str | None:
+        """呼叫模型判斷之前的限制。回傳不判斷的原因，None＝可以判斷。
+        named（D-32）：提到她名字的訊息不吃頻道名額（閉嘴、忙碌、冷卻、LLM 忙照舊）。"""
+        return (self.limits.gate(cid, attention=attention, named=named)
                 or ("busy" if self.throttle.is_busy(cid) else None)
                 or ("cooldown" if self.throttle.in_cooldown(cid) else None)
                 or ("llm_busy" if llm_busy else None))

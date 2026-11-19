@@ -530,3 +530,14 @@ def test_use_logprobs_setting_defaults_off(monkeypatch):
     assert Settings().chime_use_logprobs is False
     monkeypatch.setenv("CHIME_USE_LOGPROBS", "1")
     assert Settings().chime_use_logprobs is True
+
+
+def test_named_message_skips_channel_interval_but_not_mute():
+    """D-32：提到她名字的訊息不受頻道「每 10 分鐘一次」限制；閉嘴照樣擋。"""
+    t = [0.0]
+    lim = ChimeLimits(1, clock=lambda: t[0])
+    lim.record_reply("c", "u", "congrats")
+    t[0] = 60
+    assert lim.gate("c") == "channel_limit" and lim.gate("c", named=True) is None
+    lim.mute("c")
+    assert lim.gate("c", named=True) == "muted"

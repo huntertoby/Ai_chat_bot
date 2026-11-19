@@ -418,24 +418,37 @@ class YukiBot(commands.Bot):
             self._members.pop(after.guild.id, None)
 
     # ---------- 訊息 ----------
-    def clean(self, message: discord.Message) -> str:
+    def clean(self, message: discord.Message, *, strip_name: bool = True) -> str:
+        """訊息文字。strip_name：拿掉 @她 和喚醒詞（叫她的訊息）；D-32 只是提到她、要走插話判斷的保留名字，
+        不然模型看到的是「才是正品」這種沒頭沒尾的話。"""
         text = message.clean_content
-        me = message.guild.me if message.guild else self.user
-        text = text.replace(f"@{me.display_name}", " ").replace(f"@{self.user.name}", " ")
-        text = self._wake.sub(" ", text)
+        if strip_name:
+            me = message.guild.me if message.guild else self.user
+            text = text.replace(f"@{me.display_name}", " ").replace(f"@{self.user.name}", " ")
+            text = self._wake.sub(" ", text)
         return re.sub(r"\s+", " ", text).strip(" ,，")
 
     def is_called(self, message: discord.Message) -> bool:
+        """一定回（D-32）：私訊、@她（含 bot 身分組）、回覆她的訊息、直接叫名字（名字在句首、後面接標點／你／結束字）。
+        名字在句中、句尾、句首接評論的只是「提到她」（`is_named`），不算。"""
         if message.guild is None or self.user in message.mentions:
             return True
         me = message.guild.me
         # 在輸入框選到的「@Yuki」可能是 Discord 幫 bot 建的身分組，不是 bot 本人
         if me and any(r.is_bot_managed() and r in me.roles for r in message.role_mentions):
             return True
-        if self._wake.search(message.content):
+        if direct_call(message.content, self._wake, self.settings.exit_words):
             return True
         ref = message.reference.resolved if message.reference else None
         return isinstance(ref, discord.Message) and ref.author == self.user
+
+    def is_named(self, message: discord.Message) -> bool:
+        """訊息裡有她的名字（哪裡都算；D-32 沒直接叫她的交給插話判斷）。"""
+        return named(message.content, self._wake)
+
+    def _chime_route(self, guild: discord.Guild | None) -> bool:
+        """這個伺服器有插話判斷可走（開了插話、CHIME_IN 不是 0）。"""
+        return guild is not None and self.chime_allowed(guild) and self.replies.limits.enabled
 
     # ---------- 回覆關係 ----------
     def reply_ref(self, message: discord.Message) -> tuple[ReplyRef | None, str]:
@@ -481,23 +494,29 @@ class YukiBot(commands.Bot):
             return  # 加入、置頂、加成之類的系統訊息
         if throttle.is_command(message.content):
             return
-        text = self.clean(message)
+        called = self.is_called(message)
+        # D-32：只是提到她（名字在句中、句首接評論）。沒有插話判斷可走的伺服器（主伺服器）照舊：有名字就算叫她
+        mentioned = not called and self.is_named(message)
+        if mentioned and not self._chime_route(message.guild):
+            called, mentioned = True, False
+        text = self.clean(message, strip_name=not mentioned)  # 對話紀錄只記一份：走插話的保留名字
         cid = message.channel.id
         channel_key = str(cid)
         author = person(message.author)
         mentions = [person(u) for u in message.mentions if u != self.user and not u.bot]
         active, chiming = self.replies.attention(cid)  # chiming：她剛自己插過話，大家可能在回她
-        called = self.is_called(message)
+        to_her = called or mentioned  # 閉嘴、叫她走、等連結預覽：有名字照舊算跟她講
 
         # 對她說「閉嘴」「沒問你」：這個頻道一陣子不主動插話（被叫仍回）
-        if (called or active or chiming) and chime.is_shush(message.content):
+        if (to_her or active or chiming) and chime.is_shush(message.content):
             self.replies.mute(cid)
             log.info("被叫閉嘴，頻道 %s 在 %.0f 分鐘內不主動插話", cid, s.chime_mute_minutes)
 
         # 叫她走：只看跟她講的話（叫她、回覆她），整句就是結束字才算
-        leaving = called and (active or chiming) and is_exit(text, s.exit_words)
+        leaving = to_her and (active or chiming) and is_exit(
+            text if not mentioned else self.clean(message), s.exit_words)
 
-        if s.vision_enabled and (called or active):
+        if s.vision_enabled and (to_her or active):
             await vision.wait_for_embeds(message)  # 連結預覽是 Discord 事後補上的（訊息編輯），等一下
         images = vision.image_urls(message) if s.vision_enabled else []
         if images and not text:
@@ -532,7 +551,7 @@ class YukiBot(commands.Bot):
                 or self.replies.throttle.tag_cooling(author.id)):
             return
         attention = active or chiming
-        self.replies.schedule_chime(cid, lambda: self._chime(message, line, attention))
+        self.replies.schedule_chime(cid, lambda: self._chime(message, line, attention, named=mentioned))
 
     # ---------- 被叫到：交給排程器（節流、熱鬧模式、排隊合併）----------
     async def _on_called(self, message: discord.Message, author: Person, text: str, mentions: list[Person],
@@ -634,16 +653,18 @@ class YukiBot(commands.Bot):
     def _llm_busy(self) -> bool:
         return self._replying > 0 or chime.llm_is_busy(self.brain.llm)
 
-    async def _chime(self, message: discord.Message, line: ChatLine, attention: bool) -> Turn | None:
+    async def _chime(self, message: discord.Message, line: ChatLine, attention: bool, *,
+                     named: bool = False) -> Turn | None:
         """去抖動之後判斷一次（排程器呼叫）。決定要回覆就回傳 Turn（排程器已經佔住這個頻道，接著回覆）；
-        按表情在這裡做完；其餘回 None。每次都寫一筆 chime 追蹤紀錄（跳過的也寫，註明原因）。"""
+        按表情在這裡做完；其餘回 None。每次都寫一筆 chime 追蹤紀錄（跳過的也寫，註明原因）。
+        named（D-32）：最新一則提到她的名字（沒直接叫她），不受「每 10 分鐘一次」的頻道名額限制。"""
         s = self.settings
         cid, uid = message.channel.id, str(message.author.id)
         channel_key = str(cid)
-        info: dict = {"attention": attention}
+        info: dict = {"attention": attention, **({"named": True} if named else {})}
         turn: Turn | None = None
         tr = trace.start("chime", guild=message.guild.id if message.guild else "", channel=cid,
-                         trigger="attention" if attention else "idle", user_ids=[uid],
+                         trigger="named" if named else "attention" if attention else "idle", user_ids=[uid],
                          keep_prompts=False)  # 插話判斷每則都會寫一筆：只記判斷結果，不記帶著別人對話的 messages
         self._hide_optouts(tr, channel_key, self._replied_person(message))
         async with tr:
@@ -652,7 +673,7 @@ class YukiBot(commands.Bot):
                 info["action"] = f"skipped:{reason}"
 
             d = None
-            if reason := self.replies.chime_gate(cid, attention=attention, llm_busy=self._llm_busy()):
+            if reason := self.replies.chime_gate(cid, attention=attention, llm_busy=self._llm_busy(), named=named):
                 skip(reason)
             else:
                 d, images, eset = await self._decide(message, line, attention)

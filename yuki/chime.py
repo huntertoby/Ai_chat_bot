@@ -288,13 +288,13 @@ class ChimeLimits:
         return self._muted_until.get(channel, 0) > self._clock()
 
     # ---- 開口前的檢查：回傳不能插話的原因，None = 可以 ----
-    def gate(self, channel: Any, *, attention: bool = False) -> str | None:
-        """頻道層級的限制。注意模式（她剛講過話）不受次數間隔限制，但閉嘴仍然有效。"""
+    def gate(self, channel: Any, *, attention: bool = False, named: bool = False) -> str | None:
+        """頻道層級的限制。注意模式（她剛講過話）、提到她名字的訊息（D-32）不受次數間隔限制，但閉嘴仍然有效。"""
         if not self.enabled:
             return "chime_off"
         if self.is_muted(channel):
             return "muted"
-        if not attention:
+        if not attention and not named:
             last = self._last_chime.get(channel)
             if last is not None and self._clock() - last < self.interval_sec:
                 return "channel_limit"

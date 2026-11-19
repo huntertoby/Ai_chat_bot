@@ -33,7 +33,7 @@ def last_user_text(messages) -> str:
 # ---------- 被叫到 ----------
 def test_called_by_name_gets_a_reply_to_that_message(kits):
     kit = kits(llm=FakeLLM("在啊，怎麼了"))
-    msg = kit.say(AMING, "yuki 在嗎")
+    msg = kit.say(AMING, "yuki，在嗎")
     kit.run(msg)
     assert kit.replies == [(msg.id, "在啊，怎麼了")]
     assert "[阿明] 在嗎" in last_user_text(kit.llm.reply_calls[0])  # 喚醒詞拿掉、照對話紀錄格式給模型
@@ -54,15 +54,15 @@ def test_only_her_name_with_nothing_else_gets_a_short_question_back(kits):
 
 def test_same_person_calling_too_often_is_ignored_for_a_while(kits):
     kit = kits()
-    kit.run(*[kit.say(AMING, f"yuki 第 {i} 次") for i in range(5)])
+    kit.run(*[kit.say(AMING, f"yuki，第 {i} 次") for i in range(5)])
     assert len(kit.replies) == 3  # 60 秒內第 4 次起不回（D-24）
-    kit.run(kit.say(XIAOJIE, "yuki 換我"))
+    kit.run(kit.say(XIAOJIE, "yuki，換我"))
     assert len(kit.replies) == 4  # 別人照常
 
 
 def test_reply_failure_apologises_and_frees_the_channel(kits):
     kit = kits(llm=FakeLLM(reply_error=LLMError("斷線")))
-    kit.run(kit.say(AMING, "yuki 在嗎"))
+    kit.run(kit.say(AMING, "yuki，在嗎"))
     assert "連線好像斷了" in kit.replies[0][1]
     assert not kit.bot.replies.throttle.is_busy(5) and kit.bot._replying == 0
 
@@ -85,10 +85,10 @@ def test_busy_channel_collects_calls_and_answers_them_together_after_the_gap(kit
     kit = kits(clock=clk)
     people = [AMING, XIAOJIE, XIAOMEI, AKAI]
     for p in people:  # 60 秒內第 4 次被叫：進入熱鬧模式（第 4 次照回）
-        kit.run(kit.say(p, f"yuki 我是{p.name}"))
+        kit.run(kit.say(p, f"yuki，我是{p.name}"))
         clk.t += 1
     assert len(kit.replies) == 4
-    late1, late2 = kit.say(AMING, "yuki 還有我"), kit.say(XIAOJIE, "yuki 我也要")
+    late1, late2 = kit.say(AMING, "yuki，還有我"), kit.say(XIAOJIE, "yuki，我也要")
 
     async def both():
         await kit.bot.on_message(late1)
@@ -103,11 +103,11 @@ def test_busy_channel_new_call_does_not_jump_ahead_of_collected_ones(kits):
     clk = Clock()
     kit = kits(clock=clk)
     for p in [AMING, XIAOJIE, XIAOMEI, AKAI]:
-        kit.run(kit.say(p, f"yuki 我是{p.name}"))
+        kit.run(kit.say(p, f"yuki，我是{p.name}"))
         clk.t += 1
 
-    held = kit.say(AMING, "yuki 先排隊的")
-    newer = kit.say(XIAOJIE, "yuki 後來的")
+    held = kit.say(AMING, "yuki，先排隊的")
+    newer = kit.say(XIAOJIE, "yuki，後來的")
 
     async def scenario():
         await kit.bot.on_message(held)   # 收集起來（合併回覆還在等間隔）
@@ -132,7 +132,7 @@ def test_main_server_follow_ups_during_attention_are_answered_without_calling_he
 def test_attention_follow_up_does_not_extend_attention_but_a_real_call_does(kits):
     clk = Clock()
     kit = kits(guild=MAIN_GUILD, clock=clk)
-    kit.run(kit.say(AMING, "yuki 在嗎"))
+    kit.run(kit.say(AMING, "yuki，在嗎"))
     clk.t += 170  # 注意時間 180 秒
     kit.run(kit.say(AMING, "那你覺得呢"))
     clk.t += 20   # 第一次被叫之後 190 秒：接話沒有延長，注意時間已經過了
@@ -142,7 +142,7 @@ def test_attention_follow_up_does_not_extend_attention_but_a_real_call_does(kits
 
 def test_saying_bye_to_her_ends_attention_and_both_lines_stay_in_history(kits):
     kit = kits(guild=MAIN_GUILD)
-    kit.run(kit.say(AMING, "yuki 在嗎"), kit.say(AMING, "yuki 掰掰～"))
+    kit.run(kit.say(AMING, "yuki，在嗎"), kit.say(AMING, "yuki 掰掰～"))
     assert kit.replies[-1][1] == botmod.EXIT_REPLY
     texts = [l.text for l in kit.bot.brain.history["5"]]
     assert texts[-2:] == ["掰掰～", botmod.EXIT_REPLY]
@@ -152,19 +152,19 @@ def test_saying_bye_to_her_ends_attention_and_both_lines_stay_in_history(kits):
 
 def test_exit_word_inside_a_longer_sentence_is_a_normal_message(kits):
     kit = kits(guild=MAIN_GUILD)
-    kit.run(kit.say(AMING, "yuki 在嗎"), kit.say(AMING, "yuki 我先去吃飯掰掰"))
+    kit.run(kit.say(AMING, "yuki，在嗎"), kit.say(AMING, "yuki 我先去吃飯掰掰"))
     assert kit.replies[-1][1] == "好喔"
 
 
 def test_exit_word_said_to_someone_else_does_not_end_her_attention(kits):
     kit = kits(guild=MAIN_GUILD)
-    kit.run(kit.say(AMING, "yuki 在嗎"), kit.say(XIAOJIE, "掰掰"), kit.say(AMING, "你還在吧"))
+    kit.run(kit.say(AMING, "yuki，在嗎"), kit.say(XIAOJIE, "掰掰"), kit.say(AMING, "你還在吧"))
     assert [c for _, c in kit.replies] == ["好喔", "好喔"]  # 跟別人說掰掰（雜訊）不回，也不結束
 
 
 def test_tag_flooder_is_not_answered_through_attention_either(kits):
     kit = kits(guild=MAIN_GUILD)
-    kit.run(*[kit.say(AMING, f"yuki {i}") for i in range(4)])  # 第 4 次：開始冷卻
+    kit.run(*[kit.say(AMING, f"yuki，{i}") for i in range(4)])  # 第 4 次：開始冷卻
     kit.run(kit.say(AMING, "接下來呢"))
     assert len(kit.replies) == 3
 
@@ -272,7 +272,7 @@ def test_opted_out_person_is_answered_but_never_traced_or_searched_on_the_web(ki
     kit = kits(llm=FakeLLM("不知道欸", tool=("web_search", {"query": "阿明 2026 比賽"})), web_enabled=True,
                members=[AMING, XIAOJIE], optout_enabled=True)
     kit.bot.archive.opt_out(str(MAIN_GUILD), "1")  # 在別的伺服器打的也算
-    kit.run(kit.say(AMING, "yuki 幫我查我自己"))
+    kit.run(kit.say(AMING, "yuki，幫我查我自己"))
     assert len(kit.replies) == 1
     assert kit.llm.tool_results and "不要記我" in kit.llm.tool_results[0]  # 名字沒送出去
     assert [r for r in kit.records() if r["kind"] == "reply"] == []  # 他觸發的回覆整筆不寫追蹤紀錄
@@ -315,7 +315,7 @@ def test_chime_rechecks_that_lm_studio_is_free_after_slow_preparation(kits):
 
 def test_tag_flooder_is_not_judged_for_chiming_but_others_are(kits):
     kit = kits(llm=FakeLLM("x", {**GOOD, "participate": 0.1}))
-    kit.run(*[kit.say(AMING, f"yuki {i}") for i in range(4)])
+    kit.run(*[kit.say(AMING, f"yuki，{i}") for i in range(4)])
     kit.bot.replies.throttle._last_done.clear()
     kit.run(kit.say(AMING, "今天考試考得不錯"))
     assert kit.llm.chime_calls == []
@@ -331,7 +331,7 @@ def test_reply_counter_recovers_when_preparing_the_reply_fails(kits):
         raise RuntimeError("圖鑑壞了")
 
     kit.bot.emoji_set = broken
-    kit.run(kit.say(AMING, "yuki 在嗎"))
+    kit.run(kit.say(AMING, "yuki，在嗎"))
     assert kit.bot._replying == 0 and not kit.bot.replies.throttle.is_busy(5)
 
 
@@ -362,7 +362,7 @@ def test_optout_off_by_default_no_command_and_nobody_is_blocked(kits):
     async def fake_web(name, args):
         return "網路結果"
     kit.bot.brain.web.call = fake_web
-    kit.run(kit.say(AMING, "yuki 幫我查我自己"))
+    kit.run(kit.say(AMING, "yuki，幫我查我自己"))
     assert kit.llm.tool_results == ["網路結果"]                       # 名字照常送出去查
     assert [r for r in kit.records() if r["kind"] == "reply"]        # 追蹤紀錄照常寫
     assert kit.bot.archive.opted_out() == {"1"}                      # 退出紀錄沒被刪
@@ -394,7 +394,7 @@ def test_each_server_uses_only_its_own_emoji_catalog(kits):
 
     def system_for(guild, sets, **kw):
         kit = kits(guild=guild, emoji_sets=sets, **kw)
-        kit.run(kit.say(AMING, "yuki 在嗎"))
+        kit.run(kit.say(AMING, "yuki，在嗎"))
         return kit.llm.reply_calls[0][0]["content"]
 
     both = {str(TEST_GUILD): cat.EmojiSet(str(TEST_GUILD), item), str(MAIN_GUILD): cat.EmojiSet(str(MAIN_GUILD), item)}
@@ -419,3 +419,73 @@ def test_mentioning_her_bot_role_counts_as_calling_but_other_roles_do_not(kits):
 
     assert len(mention(bot_role)) == 1   # 在輸入框選到 bot 的身分組「@Yuki」也算叫她
     assert mention(other) == []
+
+
+# ---------- D-32：提到名字不一定是叫她 ----------
+TO_ME = {**GOOD, "kind": "about_me", "reason": "在講我"}
+
+
+def test_name_inside_a_sentence_goes_to_chime_judgement_in_a_chime_server(kits):
+    kit = kits(llm=FakeLLM("謝啦", TO_ME))
+    msg = kit.say(AMING, "我覺得 yuki 回得蠻好的")
+    kit.run(msg)
+    assert len(kit.llm.chime_calls) == 1                      # 走插話判斷，不是直接回
+    assert "yuki 回得蠻好" in last_user_text(kit.llm.chime_calls[0])  # 送進判斷的那則保留名字
+    assert [l.text for l in kit.bot.brain.history["5"]][0] == "我覺得 yuki 回得蠻好的"  # 對話紀錄只記一份
+    assert kit.replies == [(msg.id, "謝啦")]                   # 判斷要回才回
+    rec = [r for r in kit.records() if r["kind"] == "chime"][0]
+    assert rec["trigger"] == "named" and json.loads(rec["final"])["named"] is True
+
+
+def test_sentence_start_comment_is_a_mention_not_a_call(kits):
+    kit = kits(llm=FakeLLM("哼", {**TO_ME, "action": "none", "participate": 0.1}))
+    kit.run(kit.say(AMING, "yuki 根本是複讀機"))
+    assert len(kit.llm.chime_calls) == 1 and kit.replies == [] and kit.llm.reply_calls == []
+
+
+def test_main_server_still_treats_any_mention_of_her_name_as_a_call(kits):
+    kit = kits(llm=FakeLLM("在啦", TO_ME), guild=MAIN_GUILD)
+    msg = kit.say(AMING, "我覺得 yuki 回得蠻好的")
+    kit.run(msg)
+    assert kit.llm.chime_calls == [] and kit.replies == [(msg.id, "在啦")]
+    assert "[阿明] 我覺得 回得蠻好的" in last_user_text(kit.llm.reply_calls[0])  # 照舊拿掉名字
+
+
+def test_direct_call_by_name_skips_chime_judgement(kits):
+    kit = kits(llm=FakeLLM("怎麼了", TO_ME))
+    msg = kit.say(AMING, "yuki 你看這個")
+    kit.run(msg)
+    assert kit.llm.chime_calls == [] and kit.replies == [(msg.id, "怎麼了")]
+    assert "[阿明] 你看這個" in last_user_text(kit.llm.reply_calls[0])
+
+
+def test_telling_her_to_shut_up_by_name_still_mutes_the_channel(kits):
+    kit = kits(llm=FakeLLM("好啦", TO_ME))
+    kit.run(kit.say(AMING, "Yuki 閉嘴"))
+    assert kit.bot.replies.limits.is_muted(5)
+    other = kits(llm=FakeLLM("好啦", TO_ME))
+    other.run(other.say(AMING, "可以叫 yuki 閉嘴嗎"))  # 只是提到她：照舊算跟她講
+    assert other.bot.replies.limits.is_muted(5)
+
+
+def test_named_chime_is_not_blocked_by_channel_limit_but_is_by_mute(kits):
+    clk = Clock()
+    kit = kits(llm=FakeLLM("恭喜", GOOD), clock=clk)
+    kit.run(kit.say(AMING, "我考上研究所了"))
+    clk.t += 200  # 過了插話後的注意時間，還在 10 分鐘一次的限制內
+    kit.run(kit.say(XIAOJIE, "我也找到工作了"))
+    assert len(kit.replies) == 1                              # 一般插話被頻道名額擋
+    kit.run(kit.say(XIAOJIE, "我覺得 yuki 剛剛講得很對"))
+    assert len(kit.replies) == 2                              # 提到她的不吃頻道名額
+    kit.bot.replies.mute(5)
+    clk.t += 10
+    kit.run(kit.say(XIAOMEI, "大家覺得 yuki 怎樣"))
+    assert len(kit.replies) == 2
+    rec = [r for r in kit.records() if r["kind"] == "chime"][-1]
+    assert json.loads(rec["final"])["action"] == "skipped:muted" and rec["trigger"] == "named"
+
+
+def test_chime_off_server_level_zero_keeps_old_name_behaviour(kits):
+    kit = kits(llm=FakeLLM("在", TO_ME), chime_in=0)  # 測試伺服器但插話關掉：沒判斷可走，有名字就回
+    kit.run(kit.say(AMING, "我覺得 yuki 回得蠻好的"))
+    assert kit.llm.chime_calls == [] and len(kit.replies) == 1
