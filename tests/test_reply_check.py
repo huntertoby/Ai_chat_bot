@@ -66,6 +66,15 @@ def test_more_shapes_seen_in_r3_runs():
     assert broken_reason("2026-03-18 那天你也這樣說", others=others) == ""
 
 
+def test_dots_only_is_empty_but_emoji_sticker_or_question_marks_are_fine():
+    assert broken_reason("...") == "empty"
+    assert broken_reason("……。") == "empty"
+    assert broken_reason("？？？") == ""  # 傻眼的反應，算正常
+    assert broken_reason(":emoji_34:") == ""
+    assert broken_reason("[貼圖:哭哭]") == ""
+    assert broken_reason("XD") == ""
+
+
 def test_same_group_emoji_is_not_echo():
     others = [("阿明", "<:emoji_34:123>")]
     assert broken_reason(":emoji_34:", others=others) == ""

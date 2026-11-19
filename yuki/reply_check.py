@@ -1,7 +1,7 @@
 """R3：回覆壞掉的程式檢查。兩種壞法：
 - meta：把「這次回覆」提示或人設的規則講出來（像在自言自語規劃怎麼回）；
 - echo：照抄對方最近講的話（含對話紀錄的 [名字] 格式）。
-只看字面，不呼叫模型。門檻都是常數，誤判（正常回覆被擋）在 R3 報告量過。"""
+另外只有刪節號、句點（「...」）的回覆算 empty。只看字面，不呼叫模型。門檻都是常數，誤判（正常回覆被擋）在 R3 報告量過。"""
 from __future__ import annotations
 
 import re
@@ -28,6 +28,7 @@ ECHO_LOOKBACK = 3      # 看最近幾則別人的訊息
 _STRIP = re.compile(r"[\s,，.。!！?？~～…、:：;；「」『』()（）\"'`*]+")
 
 
+_DOTS_ONLY = re.compile(r"^[\s.。…,，、~～·]*$")
 _EMOJI = re.compile(r"<a?:\w+:\d+>|:\w+:")  # 群組表情不算照抄（大家本來就會按同一個）
 
 
@@ -36,11 +37,13 @@ def _norm(text: str) -> str:
 
 
 def broken_reason(reply: str, *, others: list[tuple[str, str]] = ()) -> str:
-    """回覆壞掉的原因："meta"（講出提示規則）、"echo"（照抄對方）；沒壞回 ""。
+    """回覆壞掉的原因："meta"（講出提示規則）、"echo"（照抄對方）、"empty"（只有刪節號）；沒壞回 ""。
     others：最近幾則別人的訊息 [(名字, 內容)]，舊到新。"""
     text = (reply or "").strip()
     if not text:
         return ""
+    if _DOTS_ONLY.match(text):  # 只有刪節號、句點（「...」），沒有內容；「？？？」這種反應不算
+        return "empty"
     if _META.search(text):
         return "meta"
     head = text[:40]
