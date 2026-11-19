@@ -1,9 +1,9 @@
-"""R2：接在最新一則訊息後面的「這次回覆」提示（要接哪一則、@ 到的人是誰、她最近幾則的開頭），和對應的人設規則。"""
+"""R2：接在最新一則訊息後面的「這次回覆」提示（要接哪一則、@ 到的人是誰、她最近幾則的開頭、D-36 髒話），和對應的人設規則。"""
 import asyncio
 from dataclasses import replace
 
 from yuki import prompts
-from yuki.brain import Brain, latest_note, recent_openings, reply_messages
+from yuki.brain import Brain, has_swear, latest_note, others_swore, recent_openings, reply_messages
 from yuki.chat import ChatLine, Person
 from yuki.config import Settings
 
@@ -47,6 +47,12 @@ def test_note_lists_her_recent_openings():
     assert "「幹 阿明 又」「好喔那我」" in note and "換一種開頭" in note
 
 
+def test_note_has_only_the_swear_line_when_nothing_else_applies_and_none_when_latest_is_hers():
+    assert latest_note([ChatLine(AMING, "嗨")], "Yuki") == prompts.latest_note([prompts.LATEST_NOTE_NO_SWEAR])
+    assert latest_note([ChatLine(AMING, "嗨"), bot("嗨")], "Yuki") == ""
+    assert latest_note([], "Yuki") == ""
+
+
 def test_reply_messages_appends_the_note_to_the_last_user_message_only():
     lines = [ChatLine(AMING, "嗨"), bot("幹 阿明"), ChatLine(AMING, "前文"), ChatLine(AMING, "你比 @小傑 強吧")]
     msgs = reply_messages("SYS", lines, "Yuki", [XIAOJIE])
@@ -79,6 +85,7 @@ def test_brain_reply_sends_the_note_with_mentions():
     asyncio.run(brain.reply("g", "c", XIAOJIE, "你可以把 @阿凱 當狗使喚", mentions=[AKAI], members=[XIAOJIE, AKAI]))
     last = llm.messages[-1]["content"]
     assert "阿凱 是被 @ 到的另一個人" in last and "「幹 小傑 幹」" in last
+    assert prompts.LATEST_NOTE_NO_SWEAR in last  # 她自己的髒話不算別人先講
 
 
 def test_persona_covers_openings_taunts_and_tagged_people():
@@ -87,3 +94,27 @@ def test_persona_covers_openings_taunts_and_tagged_people():
     assert "嘴你" in p and "更早講的別的事" in p
     assert "@名字" in p and "第三者" in p
     assert "被嘴被嗆" in prompts.BACKGROUND_RULES
+
+
+def test_swear_words_skip_ordinary_words_with_the_same_characters():
+    for t in ["幹今天輸到爆", "靠北喔", "他媽的", "北七", "操你的", "三小", "幹 你說什麼"]:
+        assert has_swear(t), t
+    for t in ["你在幹嘛", "幹什麼", "幹話王", "能幹", "樹幹", "操場", "體操", "靠近一點", "好喔"]:
+        assert not has_swear(t), t
+
+
+def test_d36_swearing_follows_the_last_five_lines_from_others_only():
+    clean = [ChatLine(AMING, "嗨")] * 3
+    assert not others_swore(clean)
+    assert others_swore([ChatLine(XIAOJIE, "幹 好爛"), *clean])
+    assert not others_swore([bot("幹 阿明"), *clean])  # 她自己講的不算
+    # 第 6 則以前的不算（她的話不佔名額）
+    old = [ChatLine(XIAOJIE, "幹 好爛")] + [ChatLine(AMING, "嗨"), bot("好")] * 5
+    assert not others_swore(old)
+    assert others_swore(old[:-2])  # 少一則別人的，髒話那則回到最近 5 則內
+    assert prompts.LATEST_NOTE_SWEAR_OK in latest_note([ChatLine(XIAOJIE, "靠北"), ChatLine(AMING, "你說呢")], "Yuki")
+    assert prompts.LATEST_NOTE_NO_SWEAR in latest_note(clean, "Yuki")
+
+
+def test_d36_persona_says_follow_others_and_never_starts_it():
+    assert "別人先講才跟著講" in prompts.PERSONA and "可以講髒話" not in prompts.PERSONA

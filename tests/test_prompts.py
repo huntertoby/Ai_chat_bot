@@ -9,7 +9,8 @@ from yuki.tools import archive as archive_tools, web as web_tools
 
 REPLY_PARTS = ["PERSONA", "WEB_RULES", "SPOKEN_RULES", "OWNER_RULES", "ARCHIVE_RULES", "BACKGROUND_RULES",
                "EMOJI_RULES", "CHIMED_RULES", "VISION_RULES",
-               "LATEST_NOTE_LAST", "LATEST_NOTE_AT", "LATEST_NOTE_OPENINGS"]
+               "LATEST_NOTE_LAST", "LATEST_NOTE_AT", "LATEST_NOTE_OPENINGS",
+               "LATEST_NOTE_SWEAR_OK", "LATEST_NOTE_NO_SWEAR"]
 CHIME_PARTS = ["CHIME_SYSTEM", "CHIME_ATTENTION", "CHIME_EMOJI", "CHIME_EMOJI_HINT"]
 # 引號裡允許的長片語：段落標題、格式說明、要避開的說法（不是要她講的話）
 ALLOWED_QUOTES = {"被回覆的那句", "中華民國才是中國", "順著對方的說法反轉"}

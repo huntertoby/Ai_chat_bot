@@ -99,6 +99,20 @@ RECENT_OPENINGS = 4    # 看她最近幾則回覆
 _OPEN_STRIP = " \t\n,，.。!！?？~～…、:：「」"
 _OPEN_CUT = re.compile(r"[,，.。!！?？~～…、:：\n]")
 _AT = re.compile(r"@([^\s@，,。！？!?]+)")
+# D-36：常見的台灣髒話（不求完整）。「幹」排除幹嘛、幹什麼、幹話、能幹、樹幹這類不是罵人的詞
+SWEAR = re.compile(r"(?<![能樹苦骨才主實精])幹(?![嘛麼啥什部活勁練架話事])|靠北|靠腰|靠杯|媽的|他媽|你媽|三小|北七|"
+                   r"白癡|白痴|智障|雞掰|機掰|雞巴|機歪|操你|操妳|操他|操機|淦|去死")
+SWEAR_SCOPE = 5  # 看最近幾則別人的訊息（不算她自己的，包含正在回的那則）
+
+
+def has_swear(text: str) -> bool:
+    return bool(SWEAR.search(text))
+
+
+def others_swore(lines: list[ChatLine], n: int = SWEAR_SCOPE) -> bool:
+    """最近 n 則別人的訊息裡有沒有人講髒話（D-36：別人先講她才跟著講）。"""
+    others = [line for line in lines if not line.is_bot][-n:]
+    return any(has_swear(line.text) for line in others)
 
 
 def recent_openings(lines: list[ChatLine], n: int = RECENT_OPENINGS, k: int = OPENING_CHARS) -> list[str]:
@@ -116,7 +130,7 @@ def recent_openings(lines: list[ChatLine], n: int = RECENT_OPENINGS, k: int = OP
 
 
 def latest_note(lines: list[ChatLine], bot_name: str, mentions=()) -> str:
-    """這次回覆的提示（R2）：要接哪一則、最新一則 @ 到的人是誰、她最近幾則的開頭。都是程式算出來的事實。"""
+    """這次回覆的提示（R2）：要接哪一則、最新一則 @ 到的人是誰、她最近幾則的開頭、能不能講髒話（D-36）。都是程式算出來的事實。"""
     if not lines or lines[-1].is_bot:
         return ""
     last = lines[-1]
@@ -138,6 +152,7 @@ def latest_note(lines: list[ChatLine], bot_name: str, mentions=()) -> str:
         parts.append(prompts.LATEST_NOTE_AT.format(names="、".join(names)))
     if heads := recent_openings(lines):
         parts.append(prompts.LATEST_NOTE_OPENINGS.format(items="".join(f"「{h}」" for h in heads)))
+    parts.append(prompts.LATEST_NOTE_SWEAR_OK if others_swore(lines) else prompts.LATEST_NOTE_NO_SWEAR)
     return prompts.latest_note(parts)
 
 
