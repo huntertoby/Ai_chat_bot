@@ -658,3 +658,22 @@ def test_main_server_attention_respects_mute(kits):
     kit.bot.replies.mute(5)
     kit.run(kit.say(AMING, "那你覺得呢"))
     assert len(kit.replies) == 1 and json.loads(_chime_recs(kit)[-1]["final"])["action"] == "skipped:muted"
+
+
+# ---------- D-34：「沒叫你」結束注意模式 ----------
+def test_saying_i_did_not_call_you_ends_attention_without_a_reply(kits):
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING))
+    kit.run(kit.say(AMING, "yuki 今天打什麼"), kit.say(XIAOJIE, "我剛剛沒叫你啦"))
+    assert len(kit.replies) == 1 and kit.llm.chime_calls == []
+    assert kit.bot.replies.attention(5) == (False, False) and kit.bot.replies.limits.is_muted(5)
+    kit.run(kit.say(AMING, "那你覺得呢"))  # 注意模式結束了：不再判斷、不回
+    assert len(kit.replies) == 1 and kit.llm.chime_calls == []
+
+
+def test_saying_i_did_not_call_you_after_her_chime_ends_the_follow_up_window(kits):
+    kit = kits(llm=FakeLLM("恭喜", GOOD))
+    kit.run(kit.say(AMING, "我考上研究所了"))
+    n = len(kit.llm.chime_calls)
+    kit.run(kit.say(XIAOJIE, "不是在跟你講啦"))
+    assert kit.bot.replies.attention(5) == (False, False) and len(kit.replies) == 1
+    assert len(kit.llm.chime_calls) == n

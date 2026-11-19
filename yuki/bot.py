@@ -550,8 +550,9 @@ class YukiBot(commands.Bot):
         active, chiming = self.replies.attention(cid)  # chiming：她剛自己插過話，大家可能在回她
         to_her = called or mentioned  # 閉嘴、叫她走、等連結預覽：有名字照舊算跟她講
 
-        # 對她說「閉嘴」「沒問你」：這個頻道一陣子不主動插話（被叫仍回）
-        if (to_her or active or chiming) and chime.is_shush(message.content):
+        # 對她說「閉嘴」「沒問你」「沒叫你」：這個頻道一陣子不主動插話（被叫仍回）
+        shush = (to_her or active or chiming) and chime.is_shush(message.content)
+        if shush:
             self.replies.mute(cid)
             log.info("被叫閉嘴，頻道 %s 在 %.0f 分鐘內不主動插話", cid, s.chime_mute_minutes)
 
@@ -577,6 +578,12 @@ class YukiBot(commands.Bot):
             self.brain.observe(channel_key, ChatLine(Person(str(self.user.id), s.bot_name), EXIT_REPLY, is_bot=True))
             return
 
+        if shush and not called and (active or chiming):
+            # D-34：注意模式內（沒直接叫她）說「沒叫你」「閉嘴」這類話：結束注意模式，之後的話不再當成跟她講；不回
+            self.replies.end_attention(cid)
+            self._attn_latest.pop(cid, None)
+            log.info("注意模式內被說「沒叫你／閉嘴」，頻道 %s 結束注意模式", cid)
+            return
         if called:
             self.replies.cancel_debounce(cid)  # 有人叫她，不用再判斷要不要插話
             self._attn_latest.pop(cid, None)  # 還在等 LLM 的注意模式判斷也不用了

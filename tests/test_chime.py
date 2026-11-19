@@ -300,9 +300,10 @@ def test_reactions_have_their_own_quota():
 
 
 def test_is_shush():
-    for t in ["沒問你", "閉嘴啦", "乾你屁事", "yuki 閉嘴"]:
+    for t in ["沒問你", "閉嘴啦", "乾你屁事", "yuki 閉嘴", "我又沒叫你", "沒在叫你啦", "我沒有叫你", "不是叫你啦",
+              "我不是在跟你講", "不是在跟你說話"]:
         assert chime.is_shush(t), t
-    for t in ["我在問你", "謝謝", ""]:
+    for t in ["我在問你", "謝謝", "", "我在叫你", "是在跟你講"]:
         assert not chime.is_shush(t), t
 
 
