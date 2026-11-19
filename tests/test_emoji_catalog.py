@@ -68,3 +68,11 @@ def test_render_html_sorted_top_and_escaped():
     h = cat.render_html(items)
     assert h.index("hot") < h.index("a&lt;b&gt;") < h.index("zz")
     assert "m&amp;" in h and "停用" in h and 'class="top"' in h
+
+
+def test_revise_prompt_has_numbers_no_names():
+    sn = cat.snippets([(["甲：before"], "乙：hit :secret:", ["x"])])
+    assert sn == ["甲：before / 乙：hit :secret:"]
+    p = cat.revise_prompt([{"i": 1, "looks": "貓", "meaning": "草", "snippets": sn},
+                           {"i": 2, "looks": "狗", "meaning": "草", "snippets": []}])
+    assert "第 1 號" in p and "第 2 號" in p and "外觀：狗" in p

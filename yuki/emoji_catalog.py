@@ -101,6 +101,34 @@ def samples_text(samples: list[tuple[list[str], str, list[str]]]) -> str:
     return "\n\n".join(blocks)
 
 
+REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {"items": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"i": {"type": "integer"}, "meaning": {"type": "string"}},
+        "required": ["i", "meaning"], "additionalProperties": False}}},
+    "required": ["items"], "additionalProperties": False,
+}
+
+
+def snippets(samples: list[tuple[list[str], str, list[str]]], chars: int = 60) -> list[str]:
+    """每個樣本取前一則加那則本身，縮短，給修訂用。"""
+    out = []
+    for before, hit, _after in samples:
+        line = (before[-1][:chars] + " / " if before else "") + hit[:chars * 2]
+        out.append(line)
+    return out
+
+
+def revise_prompt(entries: list[dict]) -> str:
+    """entries 每個有 i、looks、meaning、snippets；不放名稱，只有編號。"""
+    blocks = []
+    for e in entries:
+        sn = "\n".join(f"  - {s}" for s in e.get("snippets", []))
+        blocks.append(f"第 {e['i']} 號\n外觀：{e.get('looks', '')}\n初步說明：{e.get('meaning', '')}\n片段：\n{sn}")
+    return "\n\n".join(blocks)
+
+
 def merge_item(new: dict, old: dict | None, *, only_missing: bool = False) -> dict:
     """新抓到的資料合併舊的：`use` 一律保留舊的（人工改過）；only_missing 時已有的 meaning/looks 保留。"""
     item = dict(new)

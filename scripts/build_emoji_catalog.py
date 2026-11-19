@@ -22,6 +22,7 @@ import discord
 import httpx
 
 from yuki import emoji_catalog as cat
+from yuki.brain import to_traditional
 from yuki.archive import ArchiveDB
 from yuki.config import ROOT, load_settings
 from yuki.llm import LMStudioClient, LLMError
@@ -34,16 +35,24 @@ YUKI_LOG = ROOT / "logs" / "yuki.log"
 PAUSE = 2.0
 
 MEANING_SYSTEM = (
-    "你會看到某個自訂表情在聊天群組裡被使用的幾段對話，標「>>」的那一行是用了該表情的訊息，"
-    "表情在對話中以冒號包住的名稱出現。請歸納這個表情在這個群組裡實際是在什麼情況下用的，"
-    "只寫一句話（30 字以內），用台灣繁體中文，描述情境或語氣，不要引用對話原文，不要提到人名，"
-    "不要解釋。如果看不出規律，就寫最常見的那種情境。"
+    "你會看到某個自訂表情的外觀描述，以及它在聊天群組裡被使用的幾段對話，標「>>」的那一行是用了該表情的訊息，"
+    "表情在對話中以冒號包住的名稱出現。請歸納群組成員用「這一張」的具體情境與語氣：它替訊息加了什麼"
+    "（是哪一種情緒、針對誰或什麼事、是認真還是玩笑），要能跟其他表情區分。"
+    "只寫一句短話（25 字以內），台灣繁體中文，直接寫情境，不要用「用於」「表示」開頭，"
+    "不要引用對話原文，不要提到人名。不要寫成泛稱的無奈、吐槽、無語這類萬用說法，除非這張真的只有這個用途。"
+)
+REVISE_SYSTEM = (
+    "下面是一批自訂表情，每個有編號、外觀、初步的用法說明、幾段使用時的短對話片段。"
+    "初步說明很多太像，分不出差別。請逐一修訂，讓用法不同的表情說明彼此看得出差異："
+    "根據外觀與片段寫出這張特有的情境、對象或語氣，每個 25 字以內，台灣繁體中文，不要用「用於」開頭。"
+    "如果兩張真的用法一樣，就在說明裡直接寫出「與第 N 號相同用法」。"
+    "只輸出 JSON，items 陣列裡每個編號都要有，欄位 i 是編號、meaning 是說明。"
 )
 LOOKS_PROMPT = "用一句話（30 字以內，台灣繁體中文）描述這張圖長什麼樣子：主體、表情、動作。只回答描述本身。"
 
 
 def clean(text: str) -> str:
-    text = (text or "").strip().replace("\n", " ").strip("「」\"' ")
+    text = to_traditional(text or "").strip().replace("\n", " ").strip("「」\"' ")
     return text[:120]
 
 
@@ -94,10 +103,23 @@ async def fetch_items(token: str, guild_id: int) -> list[dict]:
     return items
 
 
-async def describe_meaning(llm: LMStudioClient, samples) -> str:
-    text = cat.samples_text(samples)
+async def describe_meaning(llm: LMStudioClient, samples, looks: str = "") -> str:
+    text = (f"外觀：{looks}\n\n" if looks else "") + cat.samples_text(samples)
     return clean(await llm.chat([{"role": "system", "content": MEANING_SYSTEM},
                                  {"role": "user", "content": text}], temperature=0.2, max_tokens=200))
+
+
+async def revise_batch(llm: LMStudioClient, entries: list[dict]) -> dict[int, str]:
+    """entries 見 cat.revise_prompt；回傳 {編號: 新說明}。"""
+    res = await llm.chat_json([{"role": "system", "content": REVISE_SYSTEM},
+                               {"role": "user", "content": cat.revise_prompt(entries)}],
+                              cat.REVISE_SCHEMA, name="revise", temperature=0.2, max_tokens=3000,
+                              reasoning_effort="none")
+    out = {}
+    for r in (res or {}).get("items", []):
+        if isinstance(r, dict) and isinstance(r.get("i"), int) and r.get("meaning"):
+            out[r["i"]] = clean(str(r["meaning"]))
+    return out
 
 
 async def describe_looks(llm: LMStudioClient, http: httpx.AsyncClient, item: dict) -> str:
@@ -109,6 +131,28 @@ async def describe_looks(llm: LMStudioClient, http: httpx.AsyncClient, item: dic
     msg = [{"role": "user", "content": [{"type": "text", "text": LOOKS_PROMPT},
                                         {"type": "image_url", "image_url": {"url": url}}]}]
     return clean(await llm.chat(msg, temperature=0.2, max_tokens=200))
+
+
+async def revise_top(llm, arch, opted, items: list[dict], all_msgs, args) -> None:
+    """前 N 名（依使用次數）一起看過：說明太像的請模型改到分得出來。"""
+    top = sorted((i for i in items if i["uses"] > 0 and i["meaning"]), key=cat.sort_key)[:args.revise_top]
+    for start in range(0, len(top), args.batch):
+        chunk = top[start:start + args.batch]
+        entries = []
+        for k, it in enumerate(chunk, 1):
+            snippets = cat.snippets(cat.build_samples(arch.db, all_msgs.get(it["id"], []), opted, 3))
+            entries.append({"i": k, "looks": it["looks"], "meaning": it["meaning"], "snippets": snippets})
+        await wait_idle(not args.no_yield)
+        try:
+            new = await revise_batch(llm, entries)
+        except LLMError as e:
+            log.warning("修訂失敗：%s", e)
+            continue
+        for k, it in enumerate(chunk, 1):
+            if k in new:
+                it["meaning"] = new[k]
+        log.info("修訂 %d 張，收到 %d 則", len(chunk), len(new))
+        await asyncio.sleep(PAUSE)
 
 
 def save(items: list[dict], path: Path) -> None:
@@ -142,6 +186,7 @@ async def run(args) -> None:
         items = items[:args.limit]
 
     done: dict[str, dict] = {}
+    all_msgs: dict[str, list[int]] = {}
     llm = http = None
     if not args.no_llm:
         llm = LMStudioClient(s.lmstudio_base_url, s.llm_model, timeout=max(s.llm_timeout, 300),
@@ -151,18 +196,12 @@ async def run(args) -> None:
     try:
         for n, it in enumerate(items, 1):
             msgs = it.pop("msgs")
-            item = cat.merge_item(it, old.get(it["id"]), only_missing=args.only_missing)
+            all_msgs[it["id"]] = msgs
+            item = cat.merge_item(it, old.get(it["id"]), only_missing=args.only_missing or args.redo_meaning)
+            if args.redo_meaning:
+                item["meaning"] = ""
+            item["looks"] = to_traditional(item["looks"])
             if llm:
-                if not item["meaning"] and msgs:
-                    samples = cat.build_samples(arch.db, msgs, opted)
-                    item["samples"] = len(samples)
-                    if samples:
-                        await wait_idle(not args.no_yield)
-                        try:
-                            item["meaning"] = await describe_meaning(llm, samples)
-                        except LLMError as e:
-                            log.warning("meaning 失敗（第 %d 張）：%s", n, e)
-                        await asyncio.sleep(PAUSE)
                 if not item["looks"]:
                     await wait_idle(not args.no_yield)
                     try:
@@ -170,11 +209,24 @@ async def run(args) -> None:
                     except LLMError as e:
                         log.warning("looks 失敗（第 %d 張）：%s", n, e)
                     await asyncio.sleep(PAUSE)
+                if not item["meaning"] and msgs:
+                    samples = cat.build_samples(arch.db, msgs, opted)
+                    item["samples"] = len(samples)
+                    if samples:
+                        await wait_idle(not args.no_yield)
+                        try:
+                            item["meaning"] = await describe_meaning(llm, samples, item["looks"])
+                        except LLMError as e:
+                            log.warning("meaning 失敗（第 %d 張）：%s", n, e)
+                        await asyncio.sleep(PAUSE)
             done[item["id"]] = item
             # 沒處理到的沿用舊資料，中斷時檔案也完整
             save(list(done.values()) + [o for i, o in old.items() if i not in done], path)
             if n % 10 == 0 or n == len(items):
                 log.info("進度 %d/%d，已 %.0f 秒", n, len(items), time.monotonic() - t0)
+        if llm and args.revise_top:
+            await revise_top(llm, arch, opted, list(done.values()), all_msgs, args)
+            save(list(done.values()) + [o for i, o in old.items() if i not in done], path)
     finally:
         if llm:
             await llm.aclose()
@@ -188,6 +240,9 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--no-llm", action="store_true")
     ap.add_argument("--only-missing", action="store_true")
+    ap.add_argument("--redo-meaning", action="store_true", help="重做所有 meaning（looks 沿用，只轉繁體）")
+    ap.add_argument("--revise-top", type=int, default=0, help="前 N 名再一起修訂一次")
+    ap.add_argument("--batch", type=int, default=30, help="修訂時每次送幾張")
     ap.add_argument("--no-yield", action="store_true", help="不要在 Yuki 回話時暫停")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
