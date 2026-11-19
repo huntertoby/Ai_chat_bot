@@ -197,7 +197,7 @@ async def checked_chat(gen, system: str, lines: list[ChatLine], bot_name: str, m
 
     async def once(note: bool) -> str:
         msgs = vision.attach(reply_messages(system, lines, bot_name, mentions, note=note), list(images))
-        return to_traditional(_NAME_PREFIX.sub("", await gen(msgs)))
+        return to_traditional(reply_check.SELF_PREFIX.sub("", _NAME_PREFIX.sub("", await gen(msgs))))
 
     reply = await once(True)
     reasons: list[str] = []

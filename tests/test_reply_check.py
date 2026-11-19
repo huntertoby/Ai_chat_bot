@@ -64,6 +64,7 @@ def test_more_shapes_seen_in_r3_runs():
     assert broken_reason("阿凱：我哪知道他會打多爛啦", others=others) == "echo"   # 替別人講話
     assert broken_reason("阿凱 你主管真的很誇張", others=others) == ""
     assert broken_reason("2026-03-18 那天你也這樣說", others=others) == ""
+    assert broken_reason("阿明 2026-07-13 21:48 你覺得值得買嗎", others=[("阿明", "你覺得值得買嗎")]) == "echo"
 
 
 def test_dots_only_is_empty_but_emoji_sticker_or_question_marks_are_fine():
@@ -99,6 +100,11 @@ class ScriptedGen:
 
 def lines():
     return [ChatLine(AMING, "嗨"), ChatLine(YUKI, "幹 阿明", is_bot=True), ChatLine(AMING, "你到底有什麼用啦")]
+
+
+def test_checked_chat_strips_self_speaker_prefix():
+    gen = ScriptedGen("我：紅軸打起來確實爽啊")
+    assert asyncio.run(checked_chat(gen, "SYS", lines(), "Yuki")) == "紅軸打起來確實爽啊"
 
 
 def test_checked_chat_passes_good_reply_through_once():
