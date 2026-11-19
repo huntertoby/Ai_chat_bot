@@ -79,3 +79,11 @@ def test_brain_reply_sends_the_note_with_mentions():
     asyncio.run(brain.reply("g", "c", XIAOJIE, "你可以把 @阿凱 當狗使喚", mentions=[AKAI], members=[XIAOJIE, AKAI]))
     last = llm.messages[-1]["content"]
     assert "阿凱 是被 @ 到的另一個人" in last and "「幹 小傑 幹」" in last
+
+
+def test_persona_covers_openings_taunts_and_tagged_people():
+    p = prompts.PERSONA
+    assert "開頭要有變化" in p and "不用每句都叫" in p
+    assert "嘴你" in p and "更早講的別的事" in p
+    assert "@名字" in p and "第三者" in p
+    assert "被嘴被嗆" in prompts.BACKGROUND_RULES
