@@ -29,7 +29,7 @@ from .profile.store import ProfileDB
 from .scheduler import ReplyScheduler, Turn, decide_options
 from .text_index import add_words
 from .voice_presence import VoicePresence
-from .wake import direct_call, is_exit, named, wake_pattern  # noqa: F401（is_exit、wake_pattern 舊的匯入位置）
+from .wake import addressed_elsewhere, direct_call, is_exit, named, wake_pattern  # noqa: F401（is_exit、wake_pattern 舊的匯入位置）
 
 if TYPE_CHECKING:
     from .voice.session import VoiceSession
@@ -90,6 +90,7 @@ class YukiBot(commands.Bot):
         self.emoji_pacing = emoji_catalog.EmojiPacing()
         self.brain = Brain.build(settings)
         self._members: dict[int, list[Person]] = {}
+        self._other_bots: dict[int, re.Pattern | None] = {}  # D-34：伺服器裡其他 bot 的名字（快取）
         self._wake = wake_pattern(settings.wake_words)
         self._synced = False
         # 每頻道的回覆排程：節流（B3）、熱鬧模式、排隊合併、插話去抖動與硬限制（B2）、注意時間
@@ -412,10 +413,50 @@ class YukiBot(commands.Bot):
 
     async def on_member_join(self, member: discord.Member) -> None:
         self._members.pop(member.guild.id, None)
+        self._other_bots.pop(member.guild.id, None)
 
     async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
         if before.display_name != after.display_name:
             self._members.pop(after.guild.id, None)
+            self._other_bots.pop(after.guild.id, None)
+
+    def other_bots(self, guild: discord.Guild | None) -> re.Pattern | None:
+        """D-34：同伺服器其他 bot 的名字（顯示名稱、帳號名）。None＝沒有別的 bot。"""
+        if guild is None:
+            return None
+        if guild.id not in self._other_bots:
+            names = {n for m in guild.members if m.bot and m != self.user
+                     for n in (m.display_name, m.name, getattr(m, "global_name", None)) if n}
+            self._other_bots[guild.id] = wake_pattern(sorted(names, key=len, reverse=True)) if names else None
+        return self._other_bots[guild.id]
+
+    def mentions_others(self, message: discord.Message) -> bool:
+        """訊息裡真的 @ 了別人（使用者、其他 bot、身分組）。回覆時 Discord 自動 ping 被回覆的人
+        （內文沒有 <@ID>）不算：回覆別人交給模型判斷（D-34）。"""
+        content = message.content or ""
+        for u in message.mentions:
+            if u == self.user:
+                continue
+            if f"<@{u.id}>" in content or f"<@!{u.id}>" in content:
+                return True
+        return bool(message.role_mentions)
+
+    def addressed_elsewhere(self, message: discord.Message) -> str | None:
+        """D-34 程式端先擋：@別人、句首叫別的 bot，而且沒提到她 → 回傳原因（不呼叫模型）。"""
+        return addressed_elsewhere(message.content, self._wake, mentions_others=self.mentions_others(message),
+                                   mentions_her=self.user in message.mentions,
+                                   other_bots=self.other_bots(message.guild))
+
+    async def _trace_blocked(self, message: discord.Message, trigger: str, reason: str, attention: bool) -> None:
+        """程式端先擋下的也寫一筆 chime 追蹤（只記原因，沒有判斷結果）。"""
+        tr = trace.start("chime", guild=message.guild.id if message.guild else "", channel=message.channel.id,
+                         trigger=trigger, user_ids=[str(message.author.id)], keep_prompts=False)
+        self._hide_optouts(tr, str(message.channel.id), self._replied_person(message))
+        async with tr:
+            tr.outcome = "skipped"
+            tr.final = json.dumps({"attention": attention, "action": f"skipped:{reason}", "blocked": reason},
+                                  ensure_ascii=False)
+        log.info("不是在跟她講（%s），不判斷", reason)
 
     # ---------- 訊息 ----------
     def clean(self, message: discord.Message, *, strip_name: bool = True) -> str:
@@ -551,6 +592,10 @@ class YukiBot(commands.Bot):
                 or self.replies.throttle.tag_cooling(author.id)):
             return
         attention = active or chiming
+        if why := self.addressed_elsewhere(message):  # D-34：明顯在跟別人講，不呼叫模型（也不取消在等的判斷）
+            await self._trace_blocked(message, "named" if mentioned else "attention" if attention else "idle",
+                                      why, attention)
+            return
         self.replies.schedule_chime(cid, lambda: self._chime(message, line, attention, named=mentioned))
 
     # ---------- 被叫到：交給排程器（節流、熱鬧模式、排隊合併）----------

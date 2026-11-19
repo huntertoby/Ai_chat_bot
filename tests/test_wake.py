@@ -1,7 +1,7 @@
 """D-32：名字在句首「直接叫她」才一定回；其他提到名字的（句中、句尾、句首接評論）只是在講她。"""
 import pytest
 
-from yuki.wake import direct_call, named, wake_pattern
+from yuki.wake import addressed_elsewhere, calls_other_bot, direct_call, named, wake_pattern
 
 W = wake_pattern(["yuki", "小雪"])
 EXIT = ["掰掰", "再見", "退下", "去睡覺", "閉嘴"]
@@ -68,3 +68,41 @@ def test_asking_if_she_is_there_is_a_direct_call():
     assert direct_call("yuki在不在", wake)
     assert direct_call("Yuki 在？", wake)
     assert not direct_call("Yuki 在打遊戲的時候很吵", wake)
+
+
+# ---------- D-34：程式端先擋（不是在跟她講）----------
+BOTS = wake_pattern(["Nova", "小助手"])
+
+
+def blocked(text, *, at_other=False, at_her=False, bots=BOTS):
+    return addressed_elsewhere(text, W, mentions_others=at_other, mentions_her=at_her, other_bots=bots)
+
+
+def test_tagging_someone_else_is_not_talking_to_her():
+    assert blocked("<@123> 晚上要不要打", at_other=True) == "at_other"
+    assert blocked("<@&5> 集合了", at_other=True) == "at_other"            # 身分組也算
+
+
+def test_tagging_someone_else_but_naming_her_is_left_to_the_model():
+    assert blocked("<@123> 你問 yuki 啦", at_other=True) is None
+    assert blocked("<@123> 你看", at_other=True, at_her=True) is None
+
+
+@pytest.mark.parametrize("text", ["Nova 幫我查明天天氣", "nova，在嗎", "欸 Nova 你覺得呢", "@Nova 你好", "小助手 你好"])
+def test_leading_other_bot_name_is_calling_that_bot(text):
+    assert blocked(text) == "other_bot"
+
+
+@pytest.mark.parametrize("text", ["我覺得 Nova 比較聰明", "剛剛 nova 說的對嗎", "Novak 今天贏了", "Nova 跟 yuki 誰比較強"])
+def test_other_bot_name_in_the_middle_or_with_her_name_is_not_blocked(text):
+    assert blocked(text) is None
+
+
+def test_reply_to_someone_else_is_not_blocked_here():
+    # 回覆別人時 Discord 自動 ping 的不算 @（呼叫端不算進 mentions_others）
+    assert blocked("哈哈真的", at_other=False) is None
+
+
+def test_no_other_bots_on_the_server():
+    assert not calls_other_bot("Nova 你好", None)
+    assert blocked("Nova 你好", bots=None) is None

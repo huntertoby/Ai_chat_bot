@@ -83,3 +83,27 @@ def _is_punct(ch: str) -> bool:
 def named(text: str, wake: re.Pattern) -> bool:
     """訊息裡有她的名字（哪裡都算）。"""
     return bool(wake.search(text or ""))
+
+
+# ---------- D-34：程式端先擋「明顯不是跟她講」的訊息（不呼叫模型）----------
+def calls_other_bot(text: str, bots: re.Pattern | None) -> bool:
+    """句首是別的 bot 的名字（前面只允許空白、標點、@、短招呼語；英數字的名字要整個字相符，不分大小寫）。
+    句中提到別的 bot 不算。bots：`wake_pattern(其他 bot 的名字)`，None＝伺服器裡沒有別的 bot。"""
+    return bots is not None and _rest_after_leading_name(text or "", bots) is not None
+
+
+def addressed_elsewhere(text: str, wake: re.Pattern, *, mentions_others: bool, mentions_her: bool = False,
+                        other_bots: re.Pattern | None = None) -> str | None:
+    """沒被叫到的訊息，是不是明顯在跟別人（別的 bot）講。回傳擋下的原因，None＝交給模型判斷。
+
+    - @ 了別人（使用者、其他 bot、身分組），而且沒有 @她、沒提到她名字 → "at_other"
+    - 句首在叫別的 bot，而且沒提到她 → "other_bot"
+    回覆別人的訊息不在這裡擋（可能是在接她的話題）：呼叫端算 mentions_others 時不要把「回覆時自動 ping 對方」算進去。
+    bot.py（主伺服器注意模式、測試伺服器插話）和評估腳本共用。"""
+    if mentions_her or named(text, wake):
+        return None
+    if mentions_others:
+        return "at_other"
+    if calls_other_bot(text, other_bots):
+        return "other_bot"
+    return None

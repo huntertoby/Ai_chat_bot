@@ -489,3 +489,35 @@ def test_chime_off_server_level_zero_keeps_old_name_behaviour(kits):
     kit = kits(llm=FakeLLM("在", TO_ME), chime_in=0)  # 測試伺服器但插話關掉：沒判斷可走，有名字就回
     kit.run(kit.say(AMING, "我覺得 yuki 回得蠻好的"))
     assert kit.llm.chime_calls == [] and len(kit.replies) == 1
+
+
+# ---------- D-34：程式端先擋（@別人、叫別的 bot）----------
+NOVA = User(77, "Nova", bot=True)
+
+
+def _reply_to(kit, msg, target):
+    from types import SimpleNamespace as NS
+    msg.reference = NS(resolved=target, message_id=target.id)
+    return msg
+
+
+def test_chime_server_tagging_someone_else_is_blocked_without_asking_the_model(kits):
+    kit = kits(llm=FakeLLM("恭喜", GOOD), members=[NOVA])
+    kit.run(kit.say(AMING, f"<@{XIAOJIE.id}> 我考上研究所了", mentions=[XIAOJIE]))
+    assert kit.llm.chime_calls == [] and kit.replies == []
+    rec = [r for r in kit.records() if r["kind"] == "chime"][0]
+    assert json.loads(rec["final"])["action"] == "skipped:at_other" and rec["outcome"] == "skipped"
+    kit.run(kit.say(AMING, "Nova 幫我查明天天氣"))  # 句首叫別的 bot
+    assert kit.llm.chime_calls == []
+    kit.run(kit.say(AMING, "我覺得 Nova 比較會查天氣"))  # 句中提到：交給模型
+    assert len(kit.llm.chime_calls) == 1
+
+
+def test_chime_server_reply_to_someone_else_still_goes_to_the_model(kits):
+    kit = kits(llm=FakeLLM("恭喜", {**GOOD, "participate": 0.1}))  # 不插話：不佔頻道名額
+    first = kit.say(XIAOJIE, "你今天幹嘛")
+    kit.run(first)
+    n = len(kit.llm.chime_calls)
+    msg = _reply_to(kit, kit.say(AMING, "我考上研究所了", mentions=[XIAOJIE]), first)  # 回覆時自動 ping
+    kit.run(msg)
+    assert len(kit.llm.chime_calls) == n + 1
