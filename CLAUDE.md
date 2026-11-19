@@ -37,7 +37,7 @@ Discord 聊天機器人 Yuki，全部在本機跑（LM Studio、Qwen3-ASR、Bree
 - 文件和程式裡要舉例時用佔位：阿明、小傑、小美、阿凱；ID 寫 `<主伺服器ID>`、`<你的使用者ID>`。使用者自己的帳號 hunterchiao 可以出現。
 - push 前 hook 會跑 `scripts/check_private.py`：名單在 `.claude/private-words.txt`（本機），加上 `.env` 的 ID 和 token。
   被擋下就把內容換成佔位，**不要把字從名單拿掉來過關**。新認識的朋友名字要加進名單。
-- Yuki 本身：不准拿成員名字上網搜尋；語音只聽 `VOICE_LISTEN_USERS`。
+- Yuki 本身：可以拿成員名字上網查（D-27，取消舊規則）；語音只聽 `VOICE_LISTEN_USERS`。
 - Luna 的 repo 沒有授權條款：只能參考做法，不能複製程式碼。
 
 ## 寫 prompt 的經驗（這個模型）
