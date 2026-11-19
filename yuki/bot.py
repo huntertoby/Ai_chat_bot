@@ -29,6 +29,7 @@ from .profile.store import ProfileDB
 from .scheduler import ReplyScheduler, Turn, decide_options
 from .text_index import add_words
 from .voice_presence import VoicePresence
+from .wake import direct_call, is_exit, named, wake_pattern  # noqa: F401（is_exit、wake_pattern 舊的匯入位置）
 
 if TYPE_CHECKING:
     from .voice.session import VoiceSession
@@ -63,28 +64,6 @@ def guild_key(guild: discord.Guild | None, user: discord.abc.User) -> str:
 
 def person(member: discord.abc.User) -> Person:
     return Person(str(member.id), getattr(member, "display_name", None) or member.name)
-
-
-def wake_pattern(words: list[str]) -> re.Pattern:
-    """喚醒詞：英數字的詞要整個字相符（前後不是英文字母或數字），中文照字比對；不分大小寫。"""
-    parts = []
-    for w in words:
-        if not w:
-            continue
-        if w.isascii() and any(c.isalnum() for c in w):
-            parts.append(r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])")
-        else:
-            parts.append(re.escape(w))
-    return re.compile("|".join(parts) or r"(?!x)x", re.IGNORECASE)
-
-
-_NOT_WORD = re.compile(r"[\W_]+")  # 標點、空白、表情符號
-
-
-def is_exit(text: str, exit_words: list[str]) -> bool:
-    """叫她離開：整句（去掉喚醒詞、標點、表情後）就是結束字之一才算；句子裡夾著結束字不算。"""
-    core = _NOT_WORD.sub("", text or "").lower()
-    return bool(core) and core in {_NOT_WORD.sub("", w).lower() for w in exit_words}
 
 
 EXIT_REPLY = "好的，我先去旁邊休息囉！有事再叫我～"

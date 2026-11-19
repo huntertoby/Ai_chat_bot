@@ -27,11 +27,11 @@ from datetime import date, datetime
 from pathlib import Path
 
 from yuki import chime, prompts, throttle
-from yuki.bot import wake_pattern
 from yuki.brain import Brain
 from yuki.config import load_settings
 from yuki.chat import ChatLine, Person
 from yuki.scheduler import ReplyScheduler, Turn, chime_limits, decide_options
+from yuki.wake import wake_pattern
 
 from ._eval_b_common import BOT_NAME, EVAL_DIR, RESULT_DIR, load_jsonl, make_llm, speed, to_line
 
