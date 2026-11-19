@@ -75,3 +75,30 @@ def test_route_mode_answers_direct_calls_without_asking_the_model(tmp_path, monk
     llm2 = QuietLLM()
     plain = asyncio.run(eval_chime.eval_chime(llm2, s, None, cases_file="t.jsonl"))
     assert plain["called_ids"] == [] and llm2.calls == 5   # 不帶 --route：每題都只測插話判斷
+
+
+def test_gate_mode_blocks_tags_and_other_bot_calls_without_asking_the_model(tmp_path, monkeypatch):
+    """D-34 --gate：@別人、句首叫別的 bot（題目的 other_bots）、注意模式內說「沒叫你」→ 直接算「不回」。"""
+    monkeypatch.setattr(eval_chime, "EVAL_DIR", tmp_path)
+    base = {"recent": [{"author": "Yuki", "content": "我覺得還好", "is_yuki": True}], "tags": [],
+            "label": "others", "expect_participate": False, "other_bots": ["Nova"]}
+    cases = [
+        {**base, "id": "tag", "scenario": "at_other", "latest": {"author": "小傑", "content": "@阿凱 上線", "mentions": ["阿凱"]}},
+        {**base, "id": "tag2", "scenario": "at_other", "latest": {"author": "小傑", "content": "@阿凱 上線"}},  # 從內文抓
+        {**base, "id": "bot", "scenario": "other_bot", "latest": {"author": "小傑", "content": "nova 幫我查"}},
+        {**base, "id": "shh", "scenario": "shush", "latest": {"author": "小傑", "content": "我沒叫你啦"}},
+        {**base, "id": "her", "scenario": "to_her", "expect_participate": True,
+         "latest": {"author": "小傑", "content": "@阿凱 你問 Yuki", "mentions": ["阿凱"]}},
+        {**base, "id": "mid", "scenario": "other_bot", "latest": {"author": "小傑", "content": "我覺得 Nova 比較準"}},
+    ]
+    (tmp_path / "t.jsonl").write_text("\n".join(json.dumps(c, ensure_ascii=False) for c in cases), encoding="utf-8")
+    s = replace(Settings(), wake_words=["yuki"], chime_in=1)
+    llm = QuietLLM()
+    out = asyncio.run(eval_chime.eval_chime(llm, s, None, cases_file="t.jsonl", gate=True, attention=True))
+    assert out["gated_ids"] == {"tag": "gate:at_other", "tag2": "gate:at_other", "bot": "gate:other_bot",
+                                "shh": "gate:shush"}
+    assert llm.calls == 2 and out["by_scenario"]["other_bot"] == {"n": 2, "correct": 2, "acc": 1.0, "gated": 1}
+    assert all(r["attention"] for r in out["rows"])
+    llm2 = QuietLLM()
+    plain = asyncio.run(eval_chime.eval_chime(llm2, s, None, cases_file="t.jsonl"))
+    assert plain["gated_ids"] == {} and llm2.calls == 6

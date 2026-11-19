@@ -5,12 +5,17 @@
     python -m scripts.eval_chime --only flood --reply-sec 10 --no-real-replies
     python -m scripts.eval_chime --tag shut_up   # 只跑 chime 題目裡帶這個 tag 的
     python -m scripts.eval_chime --only chime --route --cases chime_cases_d32.jsonl   # D-32 整條路
+    python -m scripts.eval_chime --only chime --gate --attention --cases attention_cases_d34.jsonl  # D-34 注意模式
 
 - chime：每題 decide()（參數跟正式設定一樣，scheduler.decide_options）；插話 = should_reply(門檻)，
   門檻預設＝正式設定（CHIME_IN 等級或 CHIME_PROB_THRESHOLD），react 另外統計，不算插話。talk_to_me 類在正式流程是被叫到直接回，
   題目多半沒叫名字（靠「你」），所以用 attention=True（她剛講完）；其他類 attention = 前一則是不是她講的。
 - chime --route（D-32）：整條路。最新一則先用正式的觸發規則（yuki/wake.py）看算不算「叫她」
   （@Yuki、回覆她、直接叫名字）→ 算就直接當「回」，不呼叫模型；不算才走 decide()。不帶 --route 只測插話判斷。
+- chime --gate（D-34）：呼叫模型前先套程式端先擋（yuki/wake.py `addressed_elsewhere`，正式流程同一個函式）：
+  @ 了別人、句首叫別的 bot（題目的 `other_bots`），而且沒提到她 → 直接當「不回」；她剛講過話（attention）時說「沒叫你」
+  這類話（chime.is_shush）也直接當「不回」。最新一則 @ 了誰看題目的 `latest.mentions`（名字清單），沒有這欄就從內文的「@名字」抓。
+  --attention：每題都用 attention=True（注意模式：她剛回過話）。題目有 `scenario` 欄時另外列各情境正確率。
 - milestone：里程碑應插話、轉貼不應；圖縮成 512px 傳入。
 - 速度：每題 Decision.ms 的中位數與 P90（標準 <= 0.6 秒）；兩段式（CHIME_THINK_ON_MENTION）另外列不思考那條路的速度。
 - flood：用模擬時間重播人類訊息，算「會回幾則」。節流、熱鬧模式、排隊合併、插話前後的限制、注意時間
@@ -34,7 +39,7 @@ from yuki.brain import Brain
 from yuki.config import load_settings
 from yuki.chat import ChatLine, Person
 from yuki.scheduler import ReplyScheduler, Turn, chime_limits, decide_options
-from yuki.wake import direct_call, wake_pattern
+from yuki.wake import addressed_elsewhere, direct_call, wake_pattern
 
 from ._eval_b_common import BOT_NAME, EVAL_DIR, RESULT_DIR, load_jsonl, make_llm, speed, to_line
 
@@ -88,21 +93,50 @@ def route_called(latest: dict, s, wake: re.Pattern | None = None) -> bool:
             or direct_call(content, wake, s.exit_words))
 
 
+_AT = re.compile(r"@([^\s@，,。！!？?]+)")
+
+
+def gate_case(case: dict, wake: re.Pattern, attention: bool) -> str | None:
+    """D-34 程式端先擋（跟 bot.py 同一個函式）。回傳擋下的原因，None＝交給模型。"""
+    latest = case["latest"]
+    content = latest.get("content", "")
+    tagged = latest.get("mentions")
+    if tagged is None:
+        tagged = _AT.findall(content)
+    her = [m for m in tagged if wake.fullmatch(m.strip()) or m.strip().lower() == BOT_NAME.lower()]
+    others = [m for m in tagged if m not in her]
+    bots = [b for b in case.get("other_bots") or [] if b]
+    why = addressed_elsewhere(content, wake, mentions_others=bool(others), mentions_her=bool(her),
+                              other_bots=wake_pattern(bots) if bots else None)
+    if why:
+        return why
+    if attention and chime.is_shush(content):  # 注意模式內說「沒叫你」「閉嘴」：結束注意、不回
+        return "shush"
+    return None
+
+
 # ---------------------------------------------------------------- chime 50 題
-async def eval_chime(llm, s, tag: str | None, *, cases_file: str = "chime_cases.jsonl", route: bool = False) -> dict:
+async def eval_chime(llm, s, tag: str | None, *, cases_file: str = "chime_cases.jsonl", route: bool = False,
+                     gate: bool = False, attention: bool | None = None) -> dict:
     cases = load_jsonl(EVAL_DIR / cases_file)
     if tag:
         cases = [c for c in cases if tag in c.get("tags", [])]
     wake = wake_pattern(s.wake_words)
     rows = []
     for i, c in enumerate(cases, 1):
+        att0 = attention if attention is not None else (
+            c.get("label") == "talk_to_me" or bool(c["recent"] and to_line(c["recent"][-1], images=False).is_bot))
         if route and route_called(c["latest"], s, wake):  # 被叫到：正式流程直接回，不問模型
             d = chime.Decision(participate=1.0, action="reply", kind="to_me", reason="route:called", path="called")
             att = False
+        elif gate and (why := gate_case(c, wake, att0)):  # D-34：程式端先擋，不問模型
+            d = chime.Decision(participate=0.0, action="none", reason=f"gate:{why}", path="gate")
+            att = att0
         else:
-            d, att = await run_decide(llm, c, s=s)
+            d, att = await run_decide(llm, c, attention=attention, s=s)
         pred = d.should_reply(threshold(s))
-        row = {"id": c["id"], "label": c["label"], "tags": c.get("tags", []), "expect": c["expect_participate"],
+        row = {"id": c["id"], "label": c["label"], "scenario": c.get("scenario", ""), "tags": c.get("tags", []),
+               "expect": c["expect_participate"],
                "pred": pred, "react": d.should_react(threshold(s)), "attention": att,
                "ok": pred == c["expect_participate"], "decision": d.to_dict()}
         rows.append(row)
@@ -120,16 +154,24 @@ async def eval_chime(llm, s, tag: str | None, *, cases_file: str = "chime_cases.
         if rs:
             by_tag[t] = f"{sum(r['ok'] for r in rs)}/{len(rs)}"
     by_path = {}
-    for pth in ("fast", "think", "called"):
+    for pth in ("fast", "think", "called", "gate"):
         rs = [r for r in rows if r["decision"].get("path", "fast") == pth]
         if rs:
             by_path[pth] = {"n": len(rs), "correct": sum(r["ok"] for r in rs),
                             "speed": speed([r["decision"]["ms"] for r in rs])}
     loose = sum(((r["pred"] or r["react"]) == r["expect"]) for r in rows) / max(n, 1)
     kinds = Counter((r["expect"], r["pred"]) for r in rows)
-    judged = [r for r in rows if r["decision"].get("path") != "called"]
-    return {"cases": cases_file, "route": route,
+    judged = [r for r in rows if r["decision"].get("path") not in ("called", "gate")]
+    by_scenario = {}
+    for sc in dict.fromkeys(r["scenario"] for r in rows if r["scenario"]):
+        rs = [r for r in rows if r["scenario"] == sc]
+        by_scenario[sc] = {"n": len(rs), "correct": sum(r["ok"] for r in rs),
+                           "acc": round(sum(r["ok"] for r in rs) / len(rs), 3),
+                           "gated": sum(r["decision"].get("path") == "gate" for r in rs)}
+    return {"cases": cases_file, "route": route, "gate": gate, "attention_forced": attention,
             "called_ids": [r["id"] for r in rows if r["decision"].get("path") == "called"],
+            "gated_ids": {r["id"]: r["decision"]["reason"] for r in rows if r["decision"].get("path") == "gate"},
+            "by_scenario": by_scenario,
             "sweep": sweep_chime(rows), "n": n, "accuracy": round(sum(r["ok"] for r in rows) / max(n, 1), 3),
             "accuracy_react_counts": round(loose, 3), "by_label": by, "by_tag": by_tag, "by_path": by_path,
             "pronoun": {"n": len(pro), "correct": sum(r["ok"] for r in pro), "all_correct": all(r["ok"] for r in pro)},
@@ -137,7 +179,7 @@ async def eval_chime(llm, s, tag: str | None, *, cases_file: str = "chime_cases.
             "react_count": sum(r["react"] for r in rows),
             "errors": sum(bool(r["decision"].get("error")) for r in rows),
             "speed": speed([r["decision"]["ms"] for r in judged]),  # 只算有問模型的題
-            "failed": [{k: r[k] for k in ("id", "label", "expect", "pred", "react", "attention")}
+            "failed": [{k: r[k] for k in ("id", "label", "scenario", "expect", "pred", "react", "attention")}
                        | {"participate": r["decision"]["participate"], "action": r["decision"]["action"],
                           "kind": r["decision"]["kind"]} for r in rows if not r["ok"]],
             "rows": rows}
@@ -431,6 +473,10 @@ async def main() -> None:
     ap.add_argument("--cases", default="chime_cases.jsonl", help="chime 題目檔（data/eval_b/ 底下的檔名）")
     ap.add_argument("--route", action="store_true",
                     help="D-32 整條路：先看最新一則算不算叫她（算就直接回），不算才走插話判斷")
+    ap.add_argument("--gate", action="store_true",
+                    help="D-34：呼叫模型前先套程式端先擋（@別人、句首叫別的 bot、注意模式內說「沒叫你」）")
+    ap.add_argument("--attention", action="store_true", default=None,
+                    help="D-34：每題都當成注意模式（attention=True，她剛回過話）")
     ap.add_argument("--reply-sec", type=float, default=10.0, help="洗版重播：一次回覆佔用頻道的秒數")
     ap.add_argument("--no-real-replies", action="store_true", help="洗版重播不實際產生 10 則回覆")
     ap.add_argument("--out", default="eval_chime")
@@ -465,7 +511,8 @@ async def main() -> None:
     try:
         for name in which:
             if name == "chime":
-                result["chime"] = await eval_chime(llm, s, args.tag, cases_file=args.cases, route=args.route)
+                result["chime"] = await eval_chime(llm, s, args.tag, cases_file=args.cases, route=args.route,
+                                                   gate=args.gate, attention=args.attention)
             elif name == "milestone":
                 result["milestone"] = await eval_milestone(llm, s)
             else:
