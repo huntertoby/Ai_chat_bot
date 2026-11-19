@@ -145,6 +145,9 @@ class Throttle:
         q.append(item)
         del q[:-self.cfg.queue_max]
 
+    def queued(self, channel: Any) -> int:
+        return len(self._queue.get(channel, ()))
+
     def drain(self, channel: Any) -> list[Any]:
         return self._queue.pop(channel, [])
 

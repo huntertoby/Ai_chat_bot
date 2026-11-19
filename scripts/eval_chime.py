@@ -5,12 +5,13 @@
     python -m scripts.eval_chime --only flood --reply-sec 10 --no-real-replies
     python -m scripts.eval_chime --tag shut_up   # 只跑 chime 題目裡帶這個 tag 的
 
-- chime：每題 decide()；插話 = should_reply(0.7)（react 另外統計，不算插話）。talk_to_me 類在正式流程是被叫到直接回，
+- chime：每題 decide()（參數跟正式設定一樣，scheduler.decide_options）；插話 = should_reply(門檻)，
+  門檻預設＝正式設定（CHIME_IN 等級或 CHIME_PROB_THRESHOLD），react 另外統計，不算插話。talk_to_me 類在正式流程是被叫到直接回，
   題目多半沒叫名字（靠「你」），所以用 attention=True（她剛講完）；其他類 attention = 前一則是不是她講的。
 - milestone：里程碑應插話、轉貼不應；圖縮成 512px 傳入。
 - 速度：每題 Decision.ms 的中位數與 P90（標準 <= 0.6 秒）。
-- flood：用模擬時間重播人類訊息（Throttle、ChimeLimits、雜訊過濾、4 秒去抖動、decide），算「會回幾則」；
-  回覆佔用頻道 --reply-sec 秒（忙碌期間被叫的排隊合併）。另外挑 10 個被叫到的點實際跑 brain.reply，
+- flood：用模擬時間重播人類訊息，算「會回幾則」。節流、熱鬧模式、排隊合併、插話前後的限制、注意時間
+  都是正式的 yuki/scheduler.py（ReplyScheduler），只有時間是模擬的；回覆佔用頻道 --reply-sec 秒。另外挑 10 個被叫到的點實際跑 brain.reply，
   檢查有沒有第三人稱稱呼自己（規則 + LLM 判斷）。重播的對話紀錄只有人類訊息（不含 Yuki 的回覆）。
 LM Studio 一次只處理一個請求；依序跑。
 """
@@ -26,17 +27,19 @@ from datetime import date, datetime
 from pathlib import Path
 
 from yuki import chime, prompts, throttle
+from yuki.bot import wake_pattern
 from yuki.brain import Brain
 from yuki.config import load_settings
 from yuki.memory.store import MemoryStore
 from yuki.memory.writer import ChatLine
 from yuki.rag.decompose import Person
+from yuki.scheduler import ReplyScheduler, Turn, chime_limits, decide_options
 
 from ._eval_b_common import BOT_NAME, EVAL_DIR, RESULT_DIR, load_jsonl, make_llm, speed, to_line
 
-THRESHOLD = 0.7
+THRESHOLD: float | None = None  # None＝正式設定的門檻
 SWEEP = (0.5, 0.6, 0.7, 0.8)  # D-22：離線掃門檻（同一次跑記下機率，門檻在程式外套用）
-USE_LOGPROBS = True
+USE_LOGPROBS: bool | None = None  # None＝正式設定（CHIME_USE_LOGPROBS）
 EMOJI_BLOCK = ""  # C1-2：--emoji 指到圖鑑時，插話判斷帶 10 張群組表情清單（跟上線時一樣）
 
 # D-22 規則變體（評估用；只描述標準，不放範例句）。贏了才會寫進 yuki/prompts.py。
@@ -52,16 +55,25 @@ def _images_of(lines: list[ChatLine], n: int = 3) -> list[str]:
     return out[-n:]
 
 
+def decide_opts(s) -> dict:
+    """正式設定給 decide() 的參數；--logprobs / --no-logprobs 才蓋過。"""
+    opts = decide_options(s)
+    if USE_LOGPROBS is not None:
+        opts["use_logprobs"] = USE_LOGPROBS
+    return {**opts, "emoji_block": EMOJI_BLOCK}
+
+
+def threshold(s) -> float:
+    return THRESHOLD if THRESHOLD is not None else chime_limits(s).threshold
+
+
 async def run_decide(llm, case: dict, *, attention: bool | None = None, s=None):
     recent = [to_line(m) for m in case["recent"]]
     latest = to_line(case["latest"])
     if attention is None:
         attention = case.get("label") == "talk_to_me" or bool(recent and recent[-1].is_bot)
     d = await chime.decide(llm, recent=recent, latest=latest, bot_name=BOT_NAME,
-                           images=_images_of(recent + [latest]), attention=attention,
-                           context_lines=s.chime_context_lines if s else 15,
-                           max_tokens=s.chime_max_tokens if s else 160, use_logprobs=USE_LOGPROBS,
-                           emoji_block=EMOJI_BLOCK)
+                           images=_images_of(recent + [latest]), attention=attention, **decide_opts(s))
     return d, attention
 
 
@@ -73,9 +85,9 @@ async def eval_chime(llm, s, tag: str | None) -> dict:
     rows = []
     for i, c in enumerate(cases, 1):
         d, att = await run_decide(llm, c, s=s)
-        pred = d.should_reply(THRESHOLD)
+        pred = d.should_reply(threshold(s))
         row = {"id": c["id"], "label": c["label"], "tags": c.get("tags", []), "expect": c["expect_participate"],
-               "pred": pred, "react": d.should_react(THRESHOLD), "attention": att,
+               "pred": pred, "react": d.should_react(threshold(s)), "attention": att,
                "ok": pred == c["expect_participate"], "decision": d.to_dict()}
         rows.append(row)
         print(f"[chime {i}/{len(cases)}] {c['id']} {c['label']} 預期 {c['expect_participate']} 實際 {pred} "
@@ -127,9 +139,9 @@ async def eval_milestone(llm, s) -> dict:
     rows = []
     for i, c in enumerate(cases, 1):
         d, _ = await run_decide(llm, c, attention=False, s=s)
-        pred = d.should_reply(THRESHOLD)
+        pred = d.should_reply(threshold(s))
         has_img = bool(c["latest"].get("images"))
-        rows.append({"id": c["id"], "group": c["group"], "pred": pred, "react": d.should_react(THRESHOLD),
+        rows.append({"id": c["id"], "group": c["group"], "pred": pred, "react": d.should_react(threshold(s)),
                      "image_only": has_img, "decision": d.to_dict()})
         print(f"[milestone {i}/{len(cases)}] {c['id']} {c['group']}{' (圖)' if has_img else ''} 插話 {pred} "
               f"({d.action} {d.participate:.2f}) {d.ms}ms", flush=True)
@@ -165,6 +177,14 @@ class SimClock:
         return self.t
 
 
+class SimScheduler(ReplyScheduler):
+    """正式的排程器（同一套節流、熱鬧模式、排隊合併、插話限制、注意時間），只是不開背景計時：
+    「回覆花多久、熱鬧模式等多久」由重播的模擬時間（advance）推進。"""
+
+    def _schedule_flush(self, cid) -> None:
+        return None
+
+
 def _ts(m: dict) -> float:
     return datetime.strptime(m["time"], "%Y-%m-%d %H:%M:%S").timestamp()
 
@@ -180,90 +200,80 @@ async def replay(llm, s, *, reply_sec: float, debounce: float):
     meta = json.loads((EVAL_DIR / "flood_meta.json").read_text(encoding="utf-8"))
     humans = [m for m in msgs if not m["is_yuki"]]
     clock = SimClock()
-    cfg = throttle.ThrottleConfig(cooldown_sec=s.throttle_cooldown_sec, tag_limit=s.throttle_tag_limit,
-                                  tag_window_sec=s.throttle_tag_window_sec,
-                                  tag_cooldown_sec=s.throttle_tag_cooldown_sec,
-                                  channel_call_burst=s.channel_call_burst,
-                                  channel_call_window_sec=s.channel_call_window_sec,
-                                  channel_burst_mode_sec=s.channel_burst_mode_sec,
-                                  channel_call_gap_sec=s.channel_call_gap_sec)
-    th = throttle.Throttle(cfg, clock=clock)
-    limits = chime.ChimeLimits(s.chime_in, threshold=s.chime_threshold, mute_sec=s.chime_mute_minutes * 60,
-                               react_max=s.chime_react_max, react_window_sec=s.chime_react_window_min * 60,
-                               clock=clock, today=lambda: date.fromtimestamp(clock.t + 86400 * 365 * 50))
-    wake = re.compile("|".join(re.escape(w) for w in s.wake_words), re.I)
+
+    async def no_respond(turn):  # 重播不真的回覆；回覆佔用頻道的時間用 reply_sec 模擬
+        return None
+
+    sch = SimScheduler(s, no_respond, clock=clock,
+                       today=lambda: date.fromtimestamp(clock.t + 86400 * 365 * 50))
+    th = sch.throttle
+    wake = wake_pattern(s.wake_words)
     ch = "chan"
     hist: list[ChatLine] = []
     st: Counter = Counter()
     called_points: list[dict] = []
-    state = {"busy_until": 0.0, "active_until": 0.0}
+    state = {"busy_until": 0.0}
     pending: dict | None = None
 
-    def start_reply(kind: str, at: float, msg: dict | None) -> None:
+    def start_reply(kind: str, at: float, turn: Turn | None) -> None:
+        """頻道已經佔住（submit / take_queued / plan_chime 給的），開始一則回覆。"""
         st["replies"] += 1
         st[f"replies_{kind}"] += 1
         state["busy_until"] = at + reply_sec
-        if kind != "chime":
-            state["active_until"] = at + s.attention_timeout
-        if msg is not None:
-            called_points.append({"id": msg["id"], "idx": msg["_idx"]})
+        if kind == "chime":
+            sch.note_chimed(ch)
+        elif turn is not None and turn.trigger == "called":
+            sch.extend_attention(ch)
+        if turn is not None and kind != "chime":
+            called_points.append({"id": turn.message["id"], "idx": turn.message["_idx"]})
 
     def advance(to: float) -> None:
-        """時間走到 to：回覆結束就解除忙碌；排隊的合成一次回覆（熱鬧模式中要等到下一次可回的時間）。"""
+        """時間走到 to：照 ReplyScheduler.run_turns / _flush_later 的順序處理回覆結束和排隊的合併回覆。"""
         while True:
             if th.is_busy(ch):
                 if state["busy_until"] > to:
                     break
                 clock.t = max(clock.t, state["busy_until"])
-                th.finish(ch)
-                q = th.drain_ready(ch)
+                n = th.queued(ch)
+                nxt = sch.next_turn(ch)  # 回完一則：排隊中已經可以回的合成下一則
+                if nxt is None:
+                    th.finish(ch)
+                    continue
+                st["merged_from"] += n - th.queued(ch)
+                start_reply("queued", clock.t, nxt)
             else:
                 wait = th.ready_in(ch)
                 if wait is None or clock.t + wait > to:
                     break
                 clock.t += wait
-                q = th.drain(ch)
-            if q:
-                st["merged_from"] += len(q)
-                th.try_start(ch)
-                start_reply("queued", clock.t, q[-1])
+                st["merged_from"] += th.queued(ch)
+                start_reply("queued", clock.t, sch.take_queued(ch))
         clock.t = max(clock.t, to)
 
     async def fire_chime(p: dict) -> None:
         at = p["fire"]
         advance(at)
-        att = state["active_until"] > at
+        att = any(sch.attention(ch))
         m = p["msg"]
-        reason = (limits.gate(ch, attention=att) or ("busy" if th.is_busy(ch) else None)
-                  or ("cooldown" if th.in_cooldown(ch) else None))
+        reason = sch.chime_gate(ch, attention=att, llm_busy=False)
         if reason:
             st[f"chime_skip_{reason}"] += 1
             return
         d = await chime.decide(llm, recent=p["recent"], latest=p["line"], bot_name=BOT_NAME, images=[],
-                               attention=att, context_lines=s.chime_context_lines, max_tokens=s.chime_max_tokens,
-                               use_logprobs=USE_LOGPROBS)
+                               attention=att, **decide_opts(s))
         st["decide_calls"] += 1
-        if d.error:
+        plan = sch.plan_chime(d, ch, m["author"], attention=att)
+        if plan == "reply":
+            start_reply("chime", at, None)
+        elif plan == "react":
+            sch.record_react(ch, m["author"], d.kind)
+            st["reacts"] += 1
+        elif plan == "error":
             st["chime_error"] += 1
-        elif d.should_reply(limits.threshold):
-            if not limits.kind_ok(m["author"], d.kind, attention=att):
-                st["chime_skip_kind_daily_limit"] += 1
-            elif not th.try_start(ch):
-                st["chime_skip_busy"] += 1
-            else:
-                limits.record_reply(ch, m["author"], d.kind, attention=att)
-                start_reply("chime", at, None)
-        elif d.should_react(0.0):
-            g = limits.react_gate(ch)
-            if g:
-                st[f"react_skip_{g}"] += 1
-            elif not limits.kind_ok(m["author"], d.kind, attention=att):
-                st["chime_skip_kind_daily_limit"] += 1
-            else:
-                limits.record_react(ch, m["author"], d.kind)
-                st["reacts"] += 1
-        else:
+        elif plan == "none":
             st["chime_none"] += 1
+        else:
+            st["chime_" + plan.replace(":", "_")] += 1
 
     t0 = _ts(humans[0])
     for m in humans:
@@ -284,9 +294,9 @@ async def replay(llm, s, *, reply_sec: float, debounce: float):
         uid = m["author"]
         called = bool(m["mentions_yuki"] or wake.search(m["content"])
                       or (m.get("reply_to") and m["reply_to"].get("is_yuki")))
-        active = state["active_until"] > t
-        if (called or active) and chime.is_shush(m["content"]):
-            limits.mute(ch)
+        active, chiming = sch.attention(ch)
+        if (called or active or chiming) and chime.is_shush(m["content"]):
+            sch.mute(ch)
             st["shush"] += 1
         line = to_line(m, images=False)
         line.text = text or "（貼了圖片）"
@@ -296,24 +306,23 @@ async def replay(llm, s, *, reply_sec: float, debounce: float):
         if called:
             pending = None
             st["called"] += 1
-            gate_ok = th.note_call(ch)
-            if not th.note_tag(uid):
+            before = th.queued(ch)
+            admitted = sch.admit_call(ch, uid)
+            if admitted is None:
                 st["tag_blocked"] += 1
-                st["queue_dropped"] += th.drop_queued(ch, lambda x: x["author"] == uid)
+                st["queue_dropped"] += before - th.queued(ch)
                 continue
             if not text:
                 st["replies"] += 1
                 st["replies_empty_call"] += 1
                 continue
-            if not gate_ok:  # 熱鬧模式：收集起來，之後合成一次回
-                th.enqueue(ch, m)
-                st["held_burst"] += 1
-                continue
-            if not th.try_start(ch):
-                th.enqueue(ch, m)
-                st["queued"] += 1
-                continue
-            start_reply("called", t, m)
+            now = sch.submit(ch, Turn(m, Person(uid, line.author.name), text, []), admitted)
+            if now is None:
+                st["held_burst" if admitted == "hold" else "queued"] += 1
+            else:
+                if before:
+                    st["merged_from"] += before + 1
+                start_reply("called", t, now)
             continue
         if not text or throttle.is_noise_text(text, s.noise_max_chars):
             st["noise_skipped"] += 1
@@ -389,14 +398,17 @@ async def main() -> None:
     ap.add_argument("--reply-sec", type=float, default=10.0, help="洗版重播：一次回覆佔用頻道的秒數")
     ap.add_argument("--no-real-replies", action="store_true", help="洗版重播不實際產生 10 則回覆")
     ap.add_argument("--out", default="eval_chime")
-    ap.add_argument("--threshold", type=float, default=THRESHOLD, help="主結果用的門檻（掃描表另外列 0.5~0.8）")
-    ap.add_argument("--no-logprobs", action="store_true", help="不用 logprobs，用模型寫的 participate（舊做法）")
+    ap.add_argument("--threshold", type=float, default=None, help="主結果用的門檻（預設＝正式設定；掃描表另外列 0.5~0.8）")
+    lp = ap.add_mutually_exclusive_group()
+    lp.add_argument("--logprobs", dest="logprobs", action="store_true", default=None,
+                    help="開口機率從 logprobs 算（預設照 CHIME_USE_LOGPROBS）")
+    lp.add_argument("--no-logprobs", dest="logprobs", action="store_false", help="用模型寫的 participate")
     ap.add_argument("--variant", choices=list(VARIANTS), default="none", help="D-22 規則變體（只影響本次評估）")
     ap.add_argument("--action-first", action="store_true", help="D-22 實驗：schema 把 action 放最前面（機率不受 reason 影響）")
     ap.add_argument("--emoji", type=Path, default=None, help="C1-2：圖鑑檔（不看 reviewed），帶表情清單跑插話判斷")
     ap.add_argument("--emoji-n", type=int, default=0, help="表情清單放幾張（預設 emoji_catalog.REACT_N）")
     args = ap.parse_args()
-    THRESHOLD, USE_LOGPROBS = args.threshold, not args.no_logprobs
+    THRESHOLD, USE_LOGPROBS = args.threshold, args.logprobs
     if args.emoji:
         from yuki import emoji_catalog
         eset = emoji_catalog.load_set(args.emoji, require_reviewed=False)
