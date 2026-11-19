@@ -192,7 +192,7 @@ async def checked_chat(gen, system: str, lines: list[ChatLine], bot_name: str, m
     """產生回覆，程式檢查有沒有壞掉（R3）：壞了就同樣的內容再生 BROKEN_RETRIES 次，
     還是壞就不附「這次回覆」提示再生一次（R2 前的組法），那次不再檢查、照用。
     gen：async (messages) -> 原始回覆文字。回傳已經拿掉開頭 [名字]、轉成台灣繁體的回覆。
-    stats：有給就記下 reasons（每次判壞的原因）、extra_ms（重生多花的毫秒）、fallback（有沒有用到最後一招）。"""
+    stats：有給就記下 reasons（每次判壞的原因）、rejected（被擋下的回覆）、extra_ms（重生多花的毫秒）、fallback（有沒有用到最後一招）。"""
     others = recent_others(lines)
 
     async def once(note: bool) -> str:
@@ -201,12 +201,14 @@ async def checked_chat(gen, system: str, lines: list[ChatLine], bot_name: str, m
 
     reply = await once(True)
     reasons: list[str] = []
+    rejected: list[str] = []
     t0 = time.monotonic()
     for attempt in range(BROKEN_RETRIES + 1):
         why = reply_check.broken_reason(reply, others=others)
         if not why:
             break
         reasons.append(why)
+        rejected.append(reply)
         log.info("回覆壞掉（%s），重生：%r", why, reply[:60])
         if tr := trace.current():
             tr.degrade(f"broken_{why}")
@@ -218,6 +220,8 @@ async def checked_chat(gen, system: str, lines: list[ChatLine], bot_name: str, m
                 stats["fallback"] = True
     if stats is not None:
         stats["reasons"] = reasons
+        if rejected:
+            stats["rejected"] = rejected
         stats["extra_ms"] = round((time.monotonic() - t0) * 1000) if reasons else 0
     return reply
 

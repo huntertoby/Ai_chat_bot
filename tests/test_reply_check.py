@@ -97,6 +97,7 @@ def test_checked_chat_retries_then_falls_back_without_note():
     out = asyncio.run(checked_chat(gen, "SYS", lines(), "Yuki", stats=stats))
     assert out == "至少我會回你"
     assert stats["reasons"] == ["meta", "echo"] and stats["fallback"] is True
+    assert stats["rejected"] == ["這是在嘴我，接住就好", "你到底有什麼用啦"]
     assert "這次回覆" in gen.seen[0][-1]["content"] and "這次回覆" in gen.seen[1][-1]["content"]
     assert "這次回覆" not in gen.seen[2][-1]["content"]  # 最後一招：不附提示
     assert gen.seen[2][0]["content"].startswith("SYS")
