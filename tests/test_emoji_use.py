@@ -165,7 +165,7 @@ def test_bot_chime_react_with_catalog_alias_and_restriction(tmp_path):
 
     def run_with(emoji):
         llm = JsonLLM({**GOOD, "action": "react", "emoji": emoji, "kind": "other"})
-        me, _ = fake_bot(llm, history=[line])
+        me, _ = fake_bot(llm, history=[line], chime_emoji_list=True)  # 預設關（CHIME_EMOJI_LIST）；這裡測開的時候
         me.emoji_set = lambda g: eset
         got = []
         asyncio.run(me.chime(fake_message(reactions=got, emojis=guild_emojis), line, False))
@@ -210,3 +210,21 @@ def test_respond_pacing_next_replies_have_no_list_and_no_emoji():
         assert seen["emoji"] == "" and sent[0][0] == "好喔"
     ok, sent, seen = _respond_with("好喔 :happy:", eset, pacing)
     assert seen["emoji"] and "<:happy:11>" in sent[0][0]
+
+
+def test_chime_emoji_list_off_by_default_still_allows_unicode(tmp_path):
+    """CHIME_EMOJI_LIST 預設關：插話判斷不帶表情清單，但一般表情（unicode）照樣能按。"""
+    from tests.test_chime import GOOD
+    from yuki import trace
+    trace.reset()
+    trace.configure(tmp_path)
+    eset = cat.EmojiSet("7", ITEMS)
+    line = ChatLine(Person("1", "阿明"), "這也太扯")
+    llm = JsonLLM({**GOOD, "action": "react", "emoji": "😂", "kind": "other"})
+    me, _ = fake_bot(llm, history=[line])
+    me.emoji_set = lambda g: eset
+    assert me.settings.chime_emoji_list is False
+    got = []
+    asyncio.run(me.chime(fake_message(reactions=got, emojis=[]), line, False))
+    assert ":happy:" not in llm.calls[0][0]["content"]
+    assert got == ["😂"]

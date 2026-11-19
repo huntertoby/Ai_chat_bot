@@ -761,7 +761,7 @@ class YukiBot(commands.Bot):
                 d = await chime.decide(self.brain.llm, recent=hist[:idx], latest=line, bot_name=s.bot_name,
                                        images=images, attention=attention, context_lines=s.chime_context_lines,
                                        max_tokens=s.chime_max_tokens, use_logprobs=s.chime_use_logprobs,
-                                       emoji_block=eset.react_block() if eset else "")
+                                       emoji_block=eset.react_block() if eset and s.chime_emoji_list else "")
                 tr.lat("decide", d.ms)
                 info.update(decision=d.to_dict(), threshold=self.limits.threshold, prob=round(d.participate, 3),
                             prob_source=d.prob_source, images=len(images))

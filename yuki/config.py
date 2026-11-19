@@ -234,6 +234,8 @@ class Settings:
     # ---- 群組表情與貼圖（開發規格 6.14，C1-2）----
     # 哪些伺服器可以用自己的表情圖鑑；留空＝只有 TEST_GUILD_IDS（主伺服器要另外決定）。圖鑑還要 reviewed 才會用
     emoji_guild_ids: list[str] = field(default_factory=lambda: _list("EMOJI_GUILD_IDS", ""))
+    # 插話判斷要不要帶群組表情清單（按反應用）。實測帶了插話正確率 78%→74%、反應合適只有 55%，預設關（按反應只用一般表情）
+    chime_emoji_list: bool = field(default_factory=lambda: _bool("CHIME_EMOJI_LIST", False))
 
     db_path: Path = field(default_factory=lambda: ROOT / _str("DB_PATH", "data/yuki.db"))
     log_level: str = field(default_factory=lambda: _str("LOG_LEVEL", "INFO"))
