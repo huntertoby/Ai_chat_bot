@@ -12,7 +12,7 @@ META_PATTERNS = [
     r"不用查", r"單純閒聊", r"直接接", r"接住(?:那句|這句|就好)", r"接一下就好", r"接回去就好",
     r"是在嘴我", r"在嘴我[，。]", r"針對這句", r"針對那句", r"回一句短的", r"自嘲或", r"或輕輕嗆",
     r"換一種開頭", r"一樣的起頭", r"起頭方式", r"第三者", r"被 ?@ ?到",
-    r"給點建議就好", r"不用太認真",
+    r"給點建議就好", r"不用太認真", r"就直接(?:陪他|回他|回她|給他|給她)",
 ]
 _META = re.compile("|".join(META_PATTERNS))
 # 開頭用第三人稱轉述說話的人在幹嘛（「阿明在問…」「小美把…」後面接規劃），用說話者名字判斷
@@ -20,6 +20,8 @@ NARRATE_VERBS = r"(?:在問|在講|在說|在抱怨|在鬧|在嘴|問我|說我|
 NARRATE_TAIL = re.compile(r"就好|回一下|接話|回嘴|不用|我(?:可以|要|就|來)?接|接這個|接梗")
 # 對話紀錄格式：行首的「[名字] 內容」（[貼圖:名稱] 是貼圖語法；markdown 連結 [字](網址)、句中的方括號不算）
 _CHAT_TAG = re.compile(r"(?m)^[ \t]*\[(?!貼圖)[^\]\n]{1,32}\][ \t]+\S")
+# 照抄查聊天紀錄的結果格式：日期後面直接接「某句話」
+_SEARCH_FORMAT = re.compile(r"\d{4}-\d{2}-\d{2}\s*「[^」]{1,80}」\s*$")
 ECHO_MIN_CHARS = 6     # 對方那句（去掉空白標點）至少幾個字才比對，太短的（「好喔」）不算
 ECHO_RATIO = 0.5       # 照抄的部分佔回覆一半以上才算
 ECHO_LOOKBACK = 3      # 看最近幾則別人的訊息
@@ -45,8 +47,11 @@ def broken_reason(reply: str, *, others: list[tuple[str, str]] = ()) -> str:
     for name, _ in others:
         if name and re.match(re.escape(name) + NARRATE_VERBS, head) and NARRATE_TAIL.search(text[:120]):
             return "meta"
-    if _CHAT_TAG.search(text):
+    if _CHAT_TAG.search(text) or _SEARCH_FORMAT.search(text):
         return "echo"
+    for name, _ in others:  # 開頭「別人的名字：」＝替別人講話（模仿對話紀錄格式）
+        if name and re.match(re.escape(name) + r"\s*[：:]", text):
+            return "echo"
     r = _norm(text)
     for _, msg in list(others)[-ECHO_LOOKBACK:]:
         m = _norm(msg)

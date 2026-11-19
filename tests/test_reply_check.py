@@ -57,6 +57,15 @@ def test_normal_replies_pass_except_rule_phrases(reply):
     assert broken_reason(reply, others=others) == expected
 
 
+def test_more_shapes_seen_in_r3_runs():
+    others = [("阿凱", "他媽的 主管又叫我加班"), ("阿凱", "你幫我罵他一下")]
+    assert broken_reason("沒查到阿凱主管的詳細資料，就直接陪他罵。", others=others) == "meta"
+    assert broken_reason("我 2026-03-18「你覺得值得買嗎」", others=[("阿明", "你覺得值得買嗎")]) == "echo"
+    assert broken_reason("阿凱：我哪知道他會打多爛啦", others=others) == "echo"   # 替別人講話
+    assert broken_reason("阿凱 你主管真的很誇張", others=others) == ""
+    assert broken_reason("2026-03-18 那天你也這樣說", others=others) == ""
+
+
 def test_same_group_emoji_is_not_echo():
     others = [("阿明", "<:emoji_34:123>")]
     assert broken_reason(":emoji_34:", others=others) == ""
