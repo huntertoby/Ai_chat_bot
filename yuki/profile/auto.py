@@ -3,9 +3,8 @@
 跟 `python -m scripts.build_profiles all` 做一樣的事（抽取新訊息 → 合併進 .md），差別在：
 - 只在所有頻道閒置一段時間後才開始，每處理完一段／一個人就再檢查一次，有人講話就停下來，下次閒置再接著做。
 - 新訊息累積不夠多就不跑（太少的資訊抽不出東西，白白佔 LLM）。
-- 跟聊天共用同一個 LLM 排隊（semaphore），不會同時送兩個請求給 LM Studio。
-
-最壞情況：剛好在整理一段（約 10～25 秒）時有人叫 Yuki，要等這段整理完才輪到回覆。
+- 跟聊天共用同一個 LLM 排隊（llm.LLMSlots），不會同時送兩個請求給 LM Studio；而且聊天優先：
+  剛好在整理一段時有人叫 Yuki，這段會被中斷讓位（LLMError，進度不推進），下次閒置再從這段重做。
 """
 from __future__ import annotations
 

@@ -6,6 +6,8 @@ import json
 import logging
 import re
 import time
+from collections import deque
+from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -77,12 +79,105 @@ class LLMError(RuntimeError):
     pass
 
 
+PREEMPTED = "背景請求讓位給聊天"
+
+
+class _Hold:
+    def __init__(self, background: bool):
+        self.background = background
+        self.preempted = False
+        self.task: asyncio.Future | None = None
+
+    def preempt(self) -> None:
+        self.preempted = True
+        if self.task is not None and not self.task.done():
+            self.task.cancel()  # 關掉連線，LM Studio 那邊就停下這個請求
+
+
+class LLMSlots:
+    """送給 LM Studio 的排隊，**聊天優先**（審查一-5）：
+    - 聊天（回覆、插話判斷）先排；背景工作（人物檔案整理）只在沒有任何聊天在等、而且有空位時才送。
+    - 聊天要等的時候，正在跑的背景請求直接中斷讓位（背景那邊拿到 LLMError(PREEMPTED)，下次閒置再做），
+      所以聊天不會被一個要跑好幾分鐘的背景請求卡住。
+    - 跟 asyncio.Semaphore 一樣可以 `async with slots:`（算聊天）；`locked()` 只看聊天：
+      被背景佔著不算忙，因為聊天一來背景就讓位。"""
+
+    def __init__(self, n: int = 1):
+        self._free = max(1, n)
+        self._chat_waiters: deque[asyncio.Future] = deque()
+        self._bg_waiters: deque[asyncio.Future] = deque()
+        self._holds: set[_Hold] = set()
+
+    def locked(self) -> bool:
+        chat_holds = any(not h.background for h in self._holds)
+        return self.chat_waiting() or (self._free <= 0 and chat_holds)
+
+    def chat_waiting(self) -> bool:
+        return any(not f.done() for f in self._chat_waiters)
+
+    def _grant(self, background: bool) -> _Hold:
+        self._free -= 1
+        h = _Hold(background)
+        self._holds.add(h)
+        return h
+
+    def _wake(self) -> None:
+        while self._free > 0:
+            q = self._chat_waiters if self._chat_waiters else self._bg_waiters
+            if not q:
+                return
+            fut = q.popleft()
+            if fut.done():
+                continue
+            fut.set_result(self._grant(q is self._bg_waiters))
+
+    async def acquire(self, background: bool = False) -> _Hold:
+        if self._free > 0 and not self._chat_waiters and (not background or not self._bg_waiters):
+            return self._grant(background)
+        fut = asyncio.get_running_loop().create_future()
+        (self._bg_waiters if background else self._chat_waiters).append(fut)
+        if not background:
+            for h in list(self._holds):
+                if h.background:
+                    h.preempt()
+        try:
+            return await fut
+        except asyncio.CancelledError:
+            if fut.done() and not fut.cancelled():
+                self.release(fut.result())  # 剛好拿到位子又被取消：還回去
+            raise
+
+    def release(self, hold: _Hold) -> None:
+        if hold in self._holds:
+            self._holds.discard(hold)
+            self._free += 1
+        self._wake()
+
+    @asynccontextmanager
+    async def hold(self, background: bool = False):
+        h = await self.acquire(background)
+        try:
+            yield h
+        finally:
+            self.release(h)
+
+    async def __aenter__(self) -> "LLMSlots":
+        self._ctx = self.hold()
+        await self._ctx.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self._ctx.__aexit__(*exc)
+
+
 class LMStudioClient:
     def __init__(self, base_url: str, model: str = "", *, temperature: float = 0.7,
                  max_tokens: int = 2048, timeout: float = 180, reasoning_effort: str = "",
                  json_reasoning_effort: str = "", max_concurrency: int = 1,
-                 extra_body: dict[str, Any] | None = None, slots: asyncio.Semaphore | None = None):
-        """slots：跟另一個 client 共用排隊（例如人物檔案更新跟聊天共用），避免同時送兩個請求給 LM Studio。"""
+                 extra_body: dict[str, Any] | None = None, slots: LLMSlots | None = None,
+                 background: bool = False):
+        """slots：跟另一個 client 共用排隊（例如人物檔案更新跟聊天共用），避免同時送兩個請求給 LM Studio。
+        background：這個 client 的請求是背景工作，排在聊天後面，聊天要用時會被中斷（LLMError(PREEMPTED)）。"""
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.temperature = temperature
@@ -90,7 +185,8 @@ class LMStudioClient:
         self.reasoning_effort = reasoning_effort
         self.json_reasoning_effort = json_reasoning_effort
         self.extra_body = extra_body or {}  # 每次請求都附加的欄位（例如 vLLM 的 chat_template_kwargs）
-        self._slots = slots or asyncio.Semaphore(max(1, max_concurrency))
+        self._slots = slots or LLMSlots(max_concurrency)
+        self.background = background
         self._http = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10))
 
     async def aclose(self) -> None:
@@ -143,8 +239,19 @@ class LMStudioClient:
         last_err: Exception | None = None
         for attempt in range(2):
             try:
-                async with self._slots:
-                    resp = await self._http.post(f"{self.base_url}/chat/completions", json=payload)
+                async with self._slots.hold(background=self.background) as slot:
+                    if slot.preempted:
+                        raise LLMError(PREEMPTED)
+                    req = asyncio.ensure_future(self._http.post(f"{self.base_url}/chat/completions", json=payload))
+                    slot.task = req
+                    try:
+                        await asyncio.wait({req})
+                    except asyncio.CancelledError:
+                        req.cancel()
+                        raise
+                    if req.cancelled():
+                        raise LLMError(PREEMPTED)
+                    resp = req.result()
                 resp.raise_for_status()
                 choice = resp.json()["choices"][0]
                 message = choice.get("message") or {}

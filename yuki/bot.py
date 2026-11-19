@@ -361,11 +361,12 @@ class YukiBot(commands.Bot):
         s = self.settings
         if self._profile_task or not (s.profile_enabled and s.profile_auto_update):
             return
-        # 跟聊天共用同一個排隊，LM Studio 不會同時收到兩個請求
+        # 跟聊天共用同一個排隊（LM Studio 不會同時收到兩個請求），但是背景優先度：
+        # 有聊天在等就不送，正在跑的也會被聊天中斷讓位（llm.LLMSlots），所以單次逾時可以放長
         self._profile_llm = LMStudioClient(s.lmstudio_base_url, s.llm_model, timeout=max(s.llm_timeout, 600),
                                            reasoning_effort=s.profile_reasoning_effort,
                                            json_reasoning_effort=s.profile_reasoning_effort,
-                                           slots=self.brain.llm._slots)
+                                           slots=self.brain.llm._slots, background=True)
         db = ProfileDB(s.profile_db_path)
 
         def make_builder(guild_id: str) -> ProfileBuilder:
