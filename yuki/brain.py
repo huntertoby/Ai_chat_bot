@@ -94,6 +94,43 @@ def to_messages(lines: list[ChatLine]) -> list[dict]:
     return msgs
 
 
+_AT = re.compile(r"@([^\s@，,。！？!?]+)")
+
+
+def latest_note(lines: list[ChatLine], bot_name: str, mentions=()) -> str:
+    """這次回覆的提示（R2）：要接哪一則、最新一則 @ 到的人是誰。都是程式算出來的事實。"""
+    if not lines or lines[-1].is_bot:
+        return ""
+    last = lines[-1]
+    parts: list[str] = []
+    block = 0  # 最後一段連續 user 訊息有幾則（to_messages 會合併成一則）
+    for line in reversed(lines):
+        if line.is_bot:
+            break
+        block += 1
+    if block > 1:
+        parts.append(prompts.LATEST_NOTE_LAST.format(author=last.author.name))
+    me = bot_name.lower()
+    names = [p.name for p in mentions if p.name.lower() != me and f"@{p.name}" in last.text]
+    for m in _AT.finditer(last.text):
+        n = m.group(1)
+        if n.lower() != me and not any(n.startswith(x) or x.startswith(n) for x in names):
+            names.append(n)
+    if names:
+        parts.append(prompts.LATEST_NOTE_AT.format(names="、".join(names)))
+    return prompts.latest_note(parts)
+
+
+def reply_messages(system: str, lines: list[ChatLine], bot_name: str, mentions=()) -> list[dict]:
+    """回覆用的 messages：system＋對話紀錄，最新一則 user 訊息後面用括號附上這次回覆的提示（latest_note）。
+    R2 實測：放在 system 最後的話，她比較常去查聊天紀錄（閒聊也查）、開頭重複也壓不太下來，所以接在最新一則後面。"""
+    msgs = to_messages(lines)
+    note = latest_note(lines, bot_name, mentions)
+    if note and msgs and msgs[-1]["role"] == "user":
+        msgs[-1] = {**msgs[-1], "content": msgs[-1]["content"] + "\n\n（" + note + "）"}
+    return [{"role": "system", "content": system}] + msgs
+
+
 class Brain:
     def __init__(self, settings: Settings, llm: LMStudioClient):
         self.settings = settings
@@ -180,7 +217,7 @@ class Brain:
                                       voice=voice, spoken=spoken, owner=owner,
                                       archive=self.archive_db is not None, vision=bool(images),
                                       background=background, chimed=chimed, emoji=emoji)
-        messages = [{"role": "system", "content": system}] + vision.attach(to_messages(lines), images)
+        messages = vision.attach(reply_messages(system, lines, s.bot_name, mentions), images)
 
         everyone = [author, *mentions, *members]
         specs: list[dict] = []
