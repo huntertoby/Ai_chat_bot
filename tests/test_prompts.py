@@ -46,6 +46,13 @@ def test_emoji_frequency_is_stated_only_when_there_is_a_catalog():
     assert re.search(r"[一二三四五六七八九十\d]成", prompts.EMOJI_RULES)
 
 
+def test_small_talk_needs_no_lookup_but_unfamiliar_things_do():
+    """閒聊不用查（聊天紀錄、網路都不用）；B4 的「不熟的人事物先查」還在。"""
+    text = prompts.reply_system("Yuki", web=True, archive=True)
+    assert "閒聊" in prompts.BACKGROUND_RULES and "不用查" in prompts.BACKGROUND_RULES
+    assert "先查再接話" in text
+
+
 def test_background_rules_can_be_turned_off_only_by_argument(monkeypatch):
     monkeypatch.setenv("YUKI_EVAL_NO_BACKGROUND_RULES", "1")  # 舊的環境變數開關不再有作用
     assert prompts.BACKGROUND_RULES in prompts.reply_system("Yuki", web=True)
