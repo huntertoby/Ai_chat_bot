@@ -12,7 +12,7 @@ AMING, XIAOJIE, XIAOMEI, YUKI = Person("1", "阿明"), Person("2", "小傑"), Pe
 
 @pytest.fixture
 def kit(tmp_path):
-    k = Kit(tmp_path)
+    k = Kit(tmp_path, optout_enabled=True)
     k.bot.archive.opt_out("g", "1")  # 阿明用過 /不要記我
     yield k
     k.close()

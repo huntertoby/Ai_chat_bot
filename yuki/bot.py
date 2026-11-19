@@ -116,9 +116,10 @@ class YukiBot(commands.Bot):
         # 每頻道的回覆排程：節流（B3）、熱鬧模式、排隊合併、插話去抖動與硬限制（B2）、注意時間
         self.replies = ReplyScheduler(settings, self._respond)
         self.archive = ArchiveDB(archive_path)
-        self.sync = ArchiveSync(self.archive, settings.archive_role, set(settings.archive_exclude))
+        self.sync = ArchiveSync(self.archive, settings.archive_role, set(settings.archive_exclude),
+                                optout=settings.optout_enabled)
         trace.configure(settings.trace_dir, max_days=settings.trace_max_days, max_mb=settings.trace_max_mb,
-                        opted_out=self._trace_opted_out)
+                        opted_out=self._trace_opted_out if settings.optout_enabled else None)
         self.voice = VoicePresence(self.archive.db)
         self.brain.archive_db = self.archive.db  # agentic 檢索（開發規格 6.4）
         self.brain.opted_out = self._all_optouts
@@ -164,8 +165,8 @@ class YukiBot(commands.Bot):
         return row is not None
 
     def _all_optouts(self) -> set[str]:
-        """打過 /不要記我 的人（不分在哪個伺服器打的）。"""
-        return self.archive.opted_out()
+        """打過 /不要記我 的人（不分在哪個伺服器打的）。功能停用時（D-28）一律當沒有人退出，也不查資料庫。"""
+        return self.archive.opted_out() if self.settings.optout_enabled else set()
 
     def _optout_names(self) -> set[str]:
         """退出的人在 Yuki 所在各伺服器的名字（暱稱、帳號名、全域名稱），上網工具不准送出這些字。"""
@@ -338,7 +339,7 @@ class YukiBot(commands.Bot):
                                   segment_chars=s.profile_segment_chars, profile_limit=s.profile_max_chars)
 
         updater = ProfileUpdater(make_builder, db, self.brain.profiles, self.archive.db, self.is_idle,
-                                 self.archive.opted_out, min_new=s.profile_min_new,
+                                 lambda gid: self._all_optouts(), min_new=s.profile_min_new,
                                  skip_guilds=set(s.test_guild_ids))
         self._profile_task = self.loop.create_task(updater.run_forever())
         log.info("人物檔案自動更新：閒置 %d 分鐘、新訊息滿 %d 則時才跑", s.profile_idle_minutes, s.profile_min_new)
@@ -575,7 +576,9 @@ class YukiBot(commands.Bot):
         return {r[0] for r in self.archive.db.execute(f"SELECT user_id FROM optout WHERE user_id IN ({marks})", ids)}
 
     def _hide_optouts(self, tr, channel_key: str, people: list[Person]) -> None:
-        """追蹤紀錄寫檔前，把 /不要記我 的人的訊息（和別人引用他們的片段、名字）拿掉。"""
+        """追蹤紀錄寫檔前，把 /不要記我 的人的訊息（和別人引用他們的片段、名字）拿掉。功能停用時不做。"""
+        if not self.settings.optout_enabled:
+            return
         def compute() -> list[str]:
             lines = list(self.brain.history.get(channel_key, ()))
             ids = {l.author.id for l in lines if not l.is_bot} | {p.id for p in people}
@@ -792,7 +795,6 @@ def register_commands(bot: YukiBot) -> None:
         await interaction.response.defer(ephemeral=True)
         await send(interaction, text, [], ephemeral=True)
 
-    @bot.tree.command(name="不要記我", description="刪除你在所有伺服器的人物檔案、記憶與封存的聊天紀錄，之後也不再整理你")
     async def opt_out(interaction: discord.Interaction) -> None:
         gid = guild_key(interaction.guild, interaction.user)
         uid = str(interaction.user.id)
@@ -808,6 +810,10 @@ def register_commands(bot: YukiBot) -> None:
             f"好，所有伺服器裡關於你的資料都刪掉了：人物檔案 {f.profiles} 份、整理過的資訊 {f.facts} 條、"
             f"舊的記憶 {f.memories} 筆、封存訊息 {f.messages} 則、語音紀錄 {f.voice} 筆。之後也不會再記你、整理你。",
             ephemeral=True)
+
+    if bot.settings.optout_enabled:  # D-28：暫時停用；OPTOUT_ENABLED=true 才註冊這個指令
+        bot.tree.command(name="不要記我",
+                         description="刪除你在所有伺服器的人物檔案、記憶與封存的聊天紀錄，之後也不再整理你")(opt_out)
 
     @bot.tree.command(name="來語音", description="叫 Yuki 進你所在的語音頻道")
     async def join_voice(interaction: discord.Interaction) -> None:

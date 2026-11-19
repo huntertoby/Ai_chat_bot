@@ -270,7 +270,7 @@ def test_chime_skipped_while_her_reply_is_still_being_prepared(kits):
 # ---------- /不要記我 的人 ----------
 def test_opted_out_person_is_answered_but_never_traced_or_searched_on_the_web(kits):
     kit = kits(llm=FakeLLM("不知道欸", tool=("web_search", {"query": "阿明 2026 比賽"})), web_enabled=True,
-               members=[AMING, XIAOJIE])
+               members=[AMING, XIAOJIE], optout_enabled=True)
     kit.bot.archive.opt_out(str(MAIN_GUILD), "1")  # 在別的伺服器打的也算
     kit.run(kit.say(AMING, "yuki 幫我查我自己"))
     assert len(kit.replies) == 1
@@ -279,7 +279,7 @@ def test_opted_out_person_is_answered_but_never_traced_or_searched_on_the_web(ki
 
 
 def test_opted_out_person_is_scrubbed_from_someone_elses_chime_trace(kits):
-    kit = kits(llm=FakeLLM("恭喜", {**GOOD, "reason": "阿明也在"}))
+    kit = kits(llm=FakeLLM("恭喜", {**GOOD, "reason": "阿明也在"}), optout_enabled=True)
     kit.bot.archive.opt_out(str(MAIN_GUILD), "1")
     kit.run(kit.say(AMING, "我偷偷報名了比賽"), kit.say(XIAOJIE, "我考上研究所了"))
     text = "\n".join(p.read_text(encoding="utf-8") for p in kit.trace_dir.glob("ai-*.jsonl"))
@@ -349,3 +349,26 @@ def test_main_server_attention_waits_for_link_previews(kits, monkeypatch):
     kit = kits(guild=MAIN_GUILD, vision_enabled=True)
     kit.run(kit.say(AMING, "yuki 看這個"), kit.say(AMING, "接下來呢"))
     assert waited == ["yuki 看這個", "接下來呢"] and len(kit.replies) == 2
+
+
+# ---------- D-28：/不要記我 暫時停用（OPTOUT_ENABLED，預設關）----------
+def test_optout_off_by_default_no_command_and_nobody_is_blocked(kits):
+    kit = kits(llm=FakeLLM("查到了", tool=("web_search", {"query": "阿明 2026 比賽"})), web_enabled=True,
+               members=[AMING])
+    assert kit.settings.optout_enabled is False
+    assert kit.bot.tree.get_command("不要記我") is None
+    kit.bot.archive.opt_out(str(MAIN_GUILD), "1")  # 以前留下的退出紀錄：資料留著，但不再生效
+
+    async def fake_web(name, args):
+        return "網路結果"
+    kit.bot.brain.web.call = fake_web
+    kit.run(kit.say(AMING, "yuki 幫我查我自己"))
+    assert kit.llm.tool_results == ["網路結果"]                       # 名字照常送出去查
+    assert [r for r in kit.records() if r["kind"] == "reply"]        # 追蹤紀錄照常寫
+    assert kit.bot.archive.opted_out() == {"1"}                      # 退出紀錄沒被刪
+    assert kit.bot.sync.skip(str(MAIN_GUILD)) == set()               # 封存照常收他的訊息
+
+
+def test_optout_enabled_registers_the_command(kits):
+    kit = kits(optout_enabled=True)
+    assert kit.bot.tree.get_command("不要記我") is not None

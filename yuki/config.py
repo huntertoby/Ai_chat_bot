@@ -92,6 +92,10 @@ class Settings:
     # 「公開頻道」= 這個身分組看得到的頻道（跟 archive_fetch --role 一樣）；留空 = @everyone
     archive_role: str = field(default_factory=lambda: _str("ARCHIVE_ROLE"))
     archive_exclude: list[str] = field(default_factory=lambda: _list("ARCHIVE_EXCLUDE", ""))
+    # /不要記我（D-28：暫時停用，群組大家都沒差）。false＝不註冊指令、不查退出名單、不擋名字；
+    # 程式、資料、資料表都留著，改成 true 就恢復（已經退出的人的紀錄不會被刪）
+    optout_enabled: bool = field(default_factory=lambda: _bool("OPTOUT_ENABLED", False))
+
     # 主人（做這隻 bot 的人）：他交代的事比較會照做，但聊天不偏袒他（prompts.OWNER_RULES）
     owner_user_ids: list[str] = field(default_factory=lambda: _list("OWNER_USER_IDS", ""))
 

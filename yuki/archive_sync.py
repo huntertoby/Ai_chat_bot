@@ -148,8 +148,10 @@ class ArchiveSync:
     """
 
     def __init__(self, db: ArchiveDB, role_name: str = "", exclude: set[str] = frozenset(), *,
-                 concurrency: int = 3):
+                 concurrency: int = 3, optout: bool = True):
+        """optout=False：/不要記我 停用（D-28），不查退出名單，每個人都照常封存。"""
         self.db = db
+        self.optout = optout
         self.role_name = role_name
         self.exclude = set(exclude)
         self.concurrency = concurrency
@@ -168,6 +170,8 @@ class ArchiveSync:
         return guild.default_role
 
     def skip(self, guild_id: str) -> set[str]:
+        if not self.optout:
+            return set()
         if guild_id not in self._skip:
             self._skip[guild_id] = self.db.opted_out(guild_id)
         return self._skip[guild_id]
