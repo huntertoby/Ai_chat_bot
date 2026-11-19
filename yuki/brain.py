@@ -94,11 +94,29 @@ def to_messages(lines: list[ChatLine]) -> list[dict]:
     return msgs
 
 
+OPENING_CHARS = 6      # 開頭取前幾個字
+RECENT_OPENINGS = 4    # 看她最近幾則回覆
+_OPEN_STRIP = " \t\n,，.。!！?？~～…、:：「」"
+_OPEN_CUT = re.compile(r"[,，.。!！?？~～…、:：\n]")
 _AT = re.compile(r"@([^\s@，,。！？!?]+)")
 
 
+def recent_openings(lines: list[ChatLine], n: int = RECENT_OPENINGS, k: int = OPENING_CHARS) -> list[str]:
+    """她最近 n 則回覆的開頭（舊到新）：去掉前面的標點，取前 k 個字，遇到標點就截斷。"""
+    out: list[str] = []
+    for line in reversed(lines):
+        if not line.is_bot:
+            continue
+        head = _OPEN_CUT.split(line.text.strip(_OPEN_STRIP), 1)[0][:k].strip()
+        if head:
+            out.append(head)
+        if len(out) >= n:
+            break
+    return out[::-1]
+
+
 def latest_note(lines: list[ChatLine], bot_name: str, mentions=()) -> str:
-    """這次回覆的提示（R2）：要接哪一則、最新一則 @ 到的人是誰。都是程式算出來的事實。"""
+    """這次回覆的提示（R2）：要接哪一則、最新一則 @ 到的人是誰、她最近幾則的開頭。都是程式算出來的事實。"""
     if not lines or lines[-1].is_bot:
         return ""
     last = lines[-1]
@@ -118,6 +136,8 @@ def latest_note(lines: list[ChatLine], bot_name: str, mentions=()) -> str:
             names.append(n)
     if names:
         parts.append(prompts.LATEST_NOTE_AT.format(names="、".join(names)))
+    if heads := recent_openings(lines):
+        parts.append(prompts.LATEST_NOTE_OPENINGS.format(items="".join(f"「{h}」" for h in heads)))
     return prompts.latest_note(parts)
 
 
