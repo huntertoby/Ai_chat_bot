@@ -8,8 +8,7 @@ from pathlib import Path
 
 from yuki.config import ROOT, Settings, load_settings
 from yuki.llm import LMStudioClient
-from yuki.memory.writer import ChatLine, ReplyRef
-from yuki.rag.decompose import Person
+from yuki.chat import ChatLine, Person, ReplyRef
 from yuki.vision import _shrink
 
 EVAL_DIR = ROOT / "data" / "eval_b"

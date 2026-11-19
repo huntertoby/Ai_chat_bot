@@ -86,9 +86,9 @@ def test_readding_message_does_not_duplicate_index():
 
 
 def test_archive_prompt():
-    p = prompts.reply_system("Yuki", [], None, archive=True)
+    p = prompts.reply_system("Yuki", archive=True)
     assert "search_chat" in p and "【關於群組成員的記憶】" not in p  # 沒有預先檢索的記憶區塊
-    assert "沒有找到相關記憶" in prompts.reply_system("Yuki", [], [])
+    assert "search_chat" not in prompts.reply_system("Yuki")
 
 
 def test_text_tool_calls_are_parsed_and_final_round_is_nudged():
@@ -128,3 +128,12 @@ def test_search_results_include_following_messages():
                  msg(3, "阿明", "好喔"), msg(4, "阿明", "不相干的話")])
     out = tools(db).search_text(["VPN"])
     assert "#1" in out and "↳ #2" in out and "cloudflare" in out and "#4" not in out
+
+
+def test_members_who_left_are_still_known_by_their_latest_archived_name():
+    from yuki.archive import ArchiveDB, ArchivedMessage
+    db = ArchiveDB(":memory:")
+    db.add_many([ArchivedMessage(i, "g", "c", "閒聊", "", uid, name, f"2026-11-0{i} 12:00:00", "嗨", None, 0)
+                 for i, (uid, name) in enumerate([("1", "阿明"), ("1", "阿明明"), ("2", "小傑")], start=1)])
+    db.add_many([ArchivedMessage(9, "other", "c", "閒聊", "", "3", "小美", "2026-11-09 12:00:00", "嗨", None, 0)])
+    assert sorted(db.authors("g")) == [("1", "阿明明"), ("2", "小傑")]

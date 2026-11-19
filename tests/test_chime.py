@@ -13,9 +13,7 @@ from yuki.brain import Brain, to_messages
 from yuki.chime import ChimeLimits, Decision, decide, parse_decision
 from yuki.config import Settings
 from yuki.llm import LLMError
-from yuki.memory.store import MemoryStore
-from yuki.memory.writer import ChatLine, ReplyRef
-from yuki.rag.decompose import Person
+from yuki.chat import ChatLine, Person, ReplyRef
 
 AMING = Person("1", "阿明")
 XIAOJIE = Person("2", "小傑")
@@ -289,35 +287,35 @@ def test_resolve_emoji():
 
 # ---------- prompt：自我指稱、先查再接話（B4 第 1、2 層）----------
 def test_persona_has_self_reference_and_reply_format_rules():
-    sys = prompts.reply_system("Yuki", [], None)
+    sys = prompts.reply_system("Yuki")
     assert "第一人稱" in sys and "回覆你" in sys and "你」就是你本人" in sys
 
 
 def test_background_rules_only_when_tools_exist():
-    assert "先查再接話" not in prompts.reply_system("Yuki", [], None)
+    assert "先查再接話" not in prompts.reply_system("Yuki")
     for kw in ({"web": True}, {"archive": True}):
-        sys = prompts.reply_system("Yuki", [], None, **kw)
+        sys = prompts.reply_system("Yuki", **kw)
         assert "先查再接話" in sys and "帶年份" in sys
         # D-27：成員的事先翻聊天紀錄，但不再禁止上網
         assert "先查群組聊天紀錄" in sys and "也可以上網" in sys and "絕對不上網" not in sys
 
 
 def test_background_line_goes_into_system_only_with_items_and_tools():
-    sys = prompts.reply_system("Yuki", [], None, web=True, archive=True, background=["某隊 奪冠", " ", "新改版"])
+    sys = prompts.reply_system("Yuki", web=True, archive=True, background=["某隊 奪冠", " ", "新改版"])
     assert "回覆前先查：某隊 奪冠、新改版" in sys
-    assert "回覆前先查" not in prompts.reply_system("Yuki", [], None, web=True, background=[])
-    assert "回覆前先查" not in prompts.reply_system("Yuki", [], None, background=["x"])  # 沒工具就不叫她查
+    assert "回覆前先查" not in prompts.reply_system("Yuki", web=True, background=[])
+    assert "回覆前先查" not in prompts.reply_system("Yuki", background=["x"])  # 沒工具就不叫她查
 
 
 def test_chimed_hint_only_when_chimed():
-    assert prompts.CHIMED_RULES in prompts.reply_system("Yuki", [], None, chimed=True)
-    assert prompts.CHIMED_RULES not in prompts.reply_system("Yuki", [], None)
+    assert prompts.CHIMED_RULES in prompts.reply_system("Yuki", chimed=True)
+    assert prompts.CHIMED_RULES not in prompts.reply_system("Yuki")
 
 
 # ---------- brain：去重、need_background 交給回覆、成員名字不上網 ----------
 def make_brain(llm, **kw):
-    settings = replace(Settings(), retrieval="agentic", web_enabled=True, **kw)
-    return Brain(settings, llm, MemoryStore(":memory:", "fake"), None, None)
+    settings = replace(Settings(), web_enabled=True, **kw)
+    return Brain(settings, llm)
 
 
 class ToolLLM:
@@ -420,9 +418,9 @@ def test_chime_system_has_about_her_but_not_to_her_rule_and_short_reason():
 def test_background_rules_default_on_and_env_switch(monkeypatch):
     from yuki import prompts
     monkeypatch.delenv("YUKI_EVAL_NO_BACKGROUND_RULES", raising=False)
-    assert prompts.BACKGROUND_RULES in prompts.reply_system("Yuki", [], None, web=True)
+    assert prompts.BACKGROUND_RULES in prompts.reply_system("Yuki", web=True)
     monkeypatch.setenv("YUKI_EVAL_NO_BACKGROUND_RULES", "1")
-    assert prompts.BACKGROUND_RULES not in prompts.reply_system("Yuki", [], None, web=True)
+    assert prompts.BACKGROUND_RULES not in prompts.reply_system("Yuki", web=True)
 
 
 # ---------- D-22：開口機率從 logprobs 算 ----------

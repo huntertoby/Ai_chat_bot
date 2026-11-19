@@ -1,6 +1,5 @@
 """B3 防洗版與節流（yuki/throttle.py）：不需要網路、模型、Discord。"""
-from yuki.memory.writer import ChatLine
-from yuki.rag.decompose import Person
+from yuki.chat import ChatLine, Person
 from yuki.throttle import (Throttle, ThrottleConfig, is_command, is_flood, is_noise_text, is_repeat,
                            strip_decor)
 

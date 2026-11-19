@@ -4,8 +4,7 @@ from types import SimpleNamespace as NS
 from yuki import chime, emoji_catalog as cat, prompts
 from yuki.bot import YukiBot
 from yuki.brain import _NAME_PREFIX
-from yuki.memory.writer import ChatLine
-from yuki.rag.decompose import Person
+from yuki.chat import ChatLine, Person
 from yuki.voice.tts import sentences, speakable
 
 ITEMS = [
@@ -42,10 +41,10 @@ def test_unreviewed_catalog_not_loaded(tmp_path):
 
 def test_prompt_has_emoji_block_only_when_given():
     block = cat.EmojiSet("1", ITEMS).prompt_block()
-    p = prompts.reply_system("Yuki", [], None, emoji=block)
+    p = prompts.reply_system("Yuki", emoji=block)
     assert ":happy: 開心" in p and "[貼圖:wave]" in p and "群組自己的表情與貼圖" in p
-    assert "群組自己的表情與貼圖" not in prompts.reply_system("Yuki", [], None)
-    assert "群組自己的表情與貼圖" not in prompts.reply_system("Yuki", [], None, emoji=block, spoken=True)
+    assert "群組自己的表情與貼圖" not in prompts.reply_system("Yuki")
+    assert "群組自己的表情與貼圖" not in prompts.reply_system("Yuki", emoji=block, spoken=True)
 
 
 def test_persona_wording_no_sample_sentences():

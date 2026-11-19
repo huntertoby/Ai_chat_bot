@@ -54,8 +54,10 @@ Yuki 是一隻住在 Discord 群組裡的聊天機器人，定位是**群組裡�
 main.py                    入口
 yuki/
   config.py                所有設定（從 .env 讀）
-  bot.py                   Discord 事件、注意力機制、斜線指令、語音指令
-  brain.py                 回覆流程（agentic / 舊的 embedding RAG）
+  bot.py                   Discord 事件、斜線指令、語音指令（Discord 轉接）
+  scheduler.py             每頻道回覆排程：節流、熱鬧模式、排隊合併、插話去抖動與限制、注意時間
+  brain.py                 回覆流程（Yuki 自己用工具查封存區、上網）
+  chat.py                  共用型別：Person、ChatLine、ReplyRef
   llm.py                   LM Studio async client、tool calling
   prompts.py               人設與所有 prompt
   trace.py                 AI 追蹤紀錄（data/logs/ai/*.jsonl）
@@ -67,7 +69,7 @@ yuki/
   tools/web.py             web_search / open_url
   profile/                 人物檔案：抽取、合併、閒置時自動更新
   voice/                   語音對話：DAVE 解密、切句（silero-vad）、ASR、TTS、對話流程
-  memory/、rag/、embedding.py   舊的事實記憶 + embedding RAG（RETRIEVAL=embedding 時才用）
+  legacy_memory.py         舊版事實記憶庫（data/yuki.db）：不再使用，只剩 /不要記我 會刪裡面的資料
 scripts/                   封存抓取、建索引、評估、語音測試、BreezyVoice 服務
   scripts/build_emoji_catalog.py   一次性：建群組表情／貼圖圖鑑（data/emoji/，6.14；`python -m scripts.build_emoji_catalog --limit 5`）
   scripts/eval_emoji.py             評估群組表情：回覆用到比例、按反應、語音（題目在 data/eval_c1/；`--catalog` 直接指圖鑑檔，不看 reviewed）
@@ -147,10 +149,10 @@ powershell -ExecutionPolicy Bypass -File F:\PythonProject\Ai_chat_bot\Ai_chat_bo
 
 | 指令 | 說明 |
 |---|---|
-| `/記憶 關鍵字:...` | 搜聊天紀錄（跟 Yuki 的 `search_chat` 同一套） |
+| `/記憶 對象:@某人 關鍵字:...` | Yuki 在聊天紀錄裡查得到的：某人最近說的話，或含關鍵字的訊息（跟 `search_chat` 同一套，只有你看得到） |
 | `/檔案 對象:@某人` | 看 Yuki 整理的人物檔案（只有你看得到） |
 | `/不要記我` | 刪掉你的人物檔案、封存訊息和語音進出紀錄，之後也不再整理你 |
-| `/白板` | 群組近況白板 |
+| `/忘記`、`/白板` | 已停用（舊版的記憶和白板），只回一句說明 |
 | `/來語音`、`/離開語音` | 叫 Yuki 進出你所在的語音頻道 |
 
 - @Yuki、訊息含「yuki」、回覆 Yuki 或私訊 → 回應，並在 3 分鐘內持續注意這個頻道；說「掰掰」「退下」結束。
@@ -212,11 +214,9 @@ python -m scripts.eval_agentic --cases eval/archive_cases.jsonl --real
 | 閒聊不亂查 | 28/30 |
 | 不用查的回覆 | 中位數 0.33 秒 |
 
-### 舊的 embedding RAG（`RETRIEVAL=embedding`）
+### 舊的 embedding RAG（已移除）
 
-查詢分解 → dense（bge-m3）+ BM25 → RRF → cross-encoder rerank → 時間感知 → LLM 重排。
-在 18,270 筆合成記憶上 Hit@6 84%，但每句都要先花約 1 秒檢索、多佔 2.8GB 顯存，現在預設改用 agentic。
-評估：`python -m scripts.eval_retrieval --cases eval/synthetic_cases.jsonl --db data/synthetic.db`。
+查詢分解 → dense（bge-m3）+ BM25 → RRF → cross-encoder rerank。在 18,270 筆合成記憶上 Hit@6 84%，但每句都要先花約 1 秒檢索、多佔 2.8GB 顯存；D-04 改用 agentic，R1 把程式移除（資料留在 data/yuki.db 沒動）。
 
 ## 授權條款
 

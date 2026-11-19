@@ -59,56 +59,9 @@ class Settings:
     llm_reasoning_effort: str = field(default_factory=lambda: _str("LLM_REASONING_EFFORT", "none"))
     llm_json_reasoning_effort: str = field(default_factory=lambda: _str("LLM_JSON_REASONING_EFFORT", "low"))
 
-    # ---- Embedding ----
-    # local = sentence-transformers 在本機跑（預設 bge-m3，中文最好）
-    # lmstudio = 呼叫 LM Studio 的 /v1/embeddings
-    embed_backend: str = field(default_factory=lambda: _str("EMBED_BACKEND", "local"))
-    embed_model: str = field(default_factory=lambda: _str("EMBED_MODEL", "BAAI/bge-m3"))
-    # 留空時依模型名稱自動決定（nomic / qwen3 需要前綴，bge-m3 不用）
-    embed_query_prefix: str | None = field(default_factory=lambda: os.getenv("EMBED_QUERY_PREFIX"))
-    embed_doc_prefix: str | None = field(default_factory=lambda: os.getenv("EMBED_DOC_PREFIX"))
-
-    # ---- Rerank ----
-    rerank_enabled: bool = field(default_factory=lambda: _bool("RERANK_ENABLED", True))
-    rerank_model: str = field(default_factory=lambda: _str("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"))
-    # 4bit / 8bit（需要 bitsandbytes）/ none；主要給 Qwen3-Reranker 這類大模型用
-    rerank_quantize: str = field(default_factory=lambda: _str("RERANK_QUANTIZE", "none"))
-    # 給 Qwen3-Reranker 的任務說明（英文效果較好）；留空用預設；bge-reranker 不使用
-    rerank_instruction: str = field(default_factory=lambda: _str("RERANK_INSTRUCTION", ""))
-    # rerank 分數（sigmoid 後 0~1）低於此值視為不相關，直接丟掉
-    rerank_min_score: float = field(default_factory=lambda: _float("RERANK_MIN_SCORE", 0.05))
-    time_boost: float = field(default_factory=lambda: _float("TIME_BOOST", 0.1))
-    rerank_focus: bool = field(default_factory=lambda: _bool("RERANK_FOCUS", True))
-    rerank_fallback: int = field(default_factory=lambda: _int("RERANK_FALLBACK", 2))
-    order_top_n: int = field(default_factory=lambda: _int("ORDER_TOP_N", 60))
-    device: str = field(default_factory=lambda: _str("DEVICE", "auto"))
-    # embedding / reranker 用 fp16 載入：顯存省一半（LM Studio 在同一張卡上），檢索結果幾乎一樣
-    model_half: bool = field(default_factory=lambda: _bool("MODEL_HALF", True))
-
-    # ---- 檢索 ----
-    retrieve_top_n: int = field(default_factory=lambda: _int("RETRIEVE_TOP_N", 20))
-    retrieve_final_k: int = field(default_factory=lambda: _int("RETRIEVE_FINAL_K", 6))
-    rrf_k: int = field(default_factory=lambda: _int("RRF_K", 60))
-    decompose_with_llm: bool = field(default_factory=lambda: _bool("DECOMPOSE_WITH_LLM", True))
-    max_subqueries: int = field(default_factory=lambda: _int("MAX_SUBQUERIES", 4))
-    query_rewrite: bool = field(default_factory=lambda: _bool("QUERY_REWRITE", False))
-    # time = 只在問題有時間說法時用 LLM 重排；always / off；舊設定 true / false 視同 always / off
-    llm_rerank: str = field(default_factory=lambda: {"true": "always", "false": "off"}.get(
-        _str("LLM_RERANK", "time").lower(), _str("LLM_RERANK", "time").lower()))
-    llm_rerank_top: int = field(default_factory=lambda: _int("LLM_RERANK_TOP", 10))
-
-    # ---- 記憶寫入 ----
-    dedup_similarity: float = field(default_factory=lambda: _float("DEDUP_SIMILARITY", 0.90))
-    max_ops_per_batch: int = field(default_factory=lambda: _int("MAX_OPS_PER_BATCH", 5))
-    max_deletes_per_batch: int = field(default_factory=lambda: _int("MAX_DELETES_PER_BATCH", 2))
-    whiteboard_max_items: int = field(default_factory=lambda: _int("WHITEBOARD_MAX_ITEMS", 20))
-
     # ---- 對話 ----
     attention_timeout: int = field(default_factory=lambda: _int("ATTENTION_TIMEOUT", 180))
     history_messages: int = field(default_factory=lambda: _int("HISTORY_MESSAGES", 20))
-    passive_enabled: bool = field(default_factory=lambda: _bool("PASSIVE_ENABLED", True))
-    passive_batch: int = field(default_factory=lambda: _int("PASSIVE_BATCH", 8))
-    passive_idle_seconds: int = field(default_factory=lambda: _int("PASSIVE_IDLE_SECONDS", 90))
 
     # ---- 人物檔案（scripts/build_profiles.py 產生，回覆時放進 prompt）----
     profile_enabled: bool = field(default_factory=lambda: _bool("PROFILE_ENABLED", True))
@@ -139,19 +92,10 @@ class Settings:
     # 「公開頻道」= 這個身分組看得到的頻道（跟 archive_fetch --role 一樣）；留空 = @everyone
     archive_role: str = field(default_factory=lambda: _str("ARCHIVE_ROLE"))
     archive_exclude: list[str] = field(default_factory=lambda: _list("ARCHIVE_EXCLUDE", ""))
-    # 補抓到的訊息要不要整理成記憶；每個頻道最多整理最近幾則（離線太久時避免一上線就卡住 LM Studio）
-    catchup_memory: bool = field(default_factory=lambda: _bool("CATCHUP_MEMORY", True))
-    catchup_memory_max: int = field(default_factory=lambda: _int("CATCHUP_MEMORY_MAX", 300))
-    # 補抓的對話中間隔超過幾分鐘就切成不同段落整理
-    catchup_gap_minutes: int = field(default_factory=lambda: _int("CATCHUP_GAP_MINUTES", 30))
-
     # 主人（做這隻 bot 的人）：他交代的事比較會照做，但聊天不偏袒他（prompts.OWNER_RULES）
     owner_user_ids: list[str] = field(default_factory=lambda: _list("OWNER_USER_IDS", ""))
 
-    # ---- 檢索方式（開發規格 6.4）----
-    # agentic：Yuki 自己用工具查封存區（不載入 embedding / reranker，省 2.8 GB 顯存）
-    # embedding：舊的每句先檢索事實記憶（bge-m3 + reranker）
-    retrieval: str = field(default_factory=lambda: _str("RETRIEVAL", "agentic"))
+    # ---- 查群組的事（開發規格 6.4）：Yuki 自己用工具查封存區（D-04，舊的 embedding 檢索已移除）----
     # 語音一次回覆最多幾輪工具呼叫（每輪 +0.6～1 秒）
     voice_max_rounds: int = field(default_factory=lambda: _int("VOICE_MAX_ROUNDS", 1))
 
@@ -237,6 +181,7 @@ class Settings:
     # 插話判斷要不要帶群組表情清單（按反應用）。實測帶了插話正確率 78%→74%、反應合適只有 55%，預設關（按反應只用一般表情）
     chime_emoji_list: bool = field(default_factory=lambda: _bool("CHIME_EMOJI_LIST", False))
 
+    # 舊版 RAG 的事實記憶庫：已不再讀寫，只有 /不要記我 會刪掉那個人的舊記憶（yuki/legacy_memory.py）
     db_path: Path = field(default_factory=lambda: ROOT / _str("DB_PATH", "data/yuki.db"))
     log_level: str = field(default_factory=lambda: _str("LOG_LEVEL", "INFO"))
 

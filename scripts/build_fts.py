@@ -10,7 +10,7 @@ import time
 
 from yuki.archive import ArchiveDB, to_simplified
 from yuki.bot import ARCHIVE_PATH
-from yuki.memory.text_index import add_words
+from yuki.text_index import add_words
 
 
 def main() -> None:

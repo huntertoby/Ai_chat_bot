@@ -22,7 +22,7 @@ from typing import Any, Awaitable, Callable
 from . import throttle
 from .chime import ChimeLimits, Decision
 from .config import Settings
-from .rag.decompose import Person
+from .chat import Person
 
 log = logging.getLogger(__name__)
 

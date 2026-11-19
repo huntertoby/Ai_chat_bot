@@ -107,5 +107,5 @@ def test_forget_and_path_is_safe(tmp_path):
 
 def test_reply_system_includes_profiles():
     from yuki.prompts import reply_system
-    text = reply_system("Yuki", [], [], profiles=[("阿明", "## 基本資料\n- 研究生")])
+    text = reply_system("Yuki", profiles=[("阿明", "## 基本資料\n- 研究生")])
     assert "【人物檔案：阿明】" in text and "群組梗與綽號" in text

@@ -30,7 +30,7 @@ async def main():
     llm = LMStudioClient(s.lmstudio_base_url, model, temperature=s.llm_temperature, max_tokens=s.llm_max_tokens,
                          timeout=s.llm_timeout, reasoning_effort=(sys.argv[2] if len(sys.argv) > 2 else s.llm_reasoning_effort))
     w = WebTools(s.searxng_url, result_chars=s.web_result_chars)
-    system = prompts.reply_system("Yuki", [], [], date.today(), [], web=True)
+    system = prompts.reply_system("Yuki", date.today(), [], web=True)
     print("MODEL", model, "| reasoning_effort", llm.reasoning_effort)
     for case in CASES:
         msgs = [{"role": "system", "content": system}]

@@ -3,7 +3,8 @@ import asyncio
 import subprocess
 from types import SimpleNamespace as NS
 
-from yuki import bot as botmod
+import pytest
+
 from yuki.bot import is_exit, wake_pattern
 
 
@@ -72,31 +73,46 @@ class FakeInteraction:
         self.response, self.followup = Resp(), Follow()
 
 
-def commands_for(store):
-    me = NS(tree=FakeTree(), brain=NS(store=store, agentic=False), settings=NS(wake_words=["yuki"]))
-    botmod.register_commands(me)
-    return me.tree.commands
+@pytest.fixture
+def cmd_kit(tmp_path):
+    from botkit import TEST_GUILD, Kit, User
+    from yuki.archive import ArchivedMessage
+    kit = Kit(tmp_path, members=[User(1, "阿明"), User(2, "小傑")])
+    kit.bot.archive.add_many([
+        ArchivedMessage(i, str(TEST_GUILD), "c1", "閒聊", "", uid, name, f"2026-11-0{i} 12:00:00", text, None, 0)
+        for i, (uid, name, text) in enumerate([("1", "阿明", "今天去打球"), ("2", "小傑", "我也想打球"),
+                                               ("1", "阿明", "晚上吃拉麵")], start=1)])
+    kit.bot.archive.commit()
+    yield kit
+    kit.close()
 
 
-def test_forget_does_not_repeat_the_forgotten_text(store):
-    import numpy as np
-    mem = store.add("dm-1", "阿明的祕密是怕黑", np.ones(4, dtype=np.float32), subject_id="1", subject_name="阿明")
-    it = FakeInteraction()
-    run(commands_for(store)["忘記"](it, mem.id))
-    (content, kw), = it.sent
-    assert "怕黑" not in content and kw.get("ephemeral") is True
-    assert store.get(mem.id) is None
+def call(kit, name, user_id="1", **kw):
+    it = FakeInteraction(user_id=user_id, guild=kit.guild)
+    run(kit.bot.tree.get_command(name).callback(it, **kw))
+    return it
 
 
-def test_memories_listing_is_only_visible_to_the_caller(store):
-    import numpy as np
-    store.add("dm-1", "阿明喜歡打球", np.ones(4, dtype=np.float32), subject_id="1", subject_name="阿明")
-    it = FakeInteraction()
-    run(commands_for(store)["記憶"](it))
-    assert it.sent and all(kw.get("ephemeral") is True for _, kw in it.sent)
-    it2 = FakeInteraction(user_id="2")  # 沒有記憶的人：那句「還沒記住」也只有自己看得到
-    run(commands_for(store)["記憶"](it2))
-    assert all(kw.get("ephemeral") is True for _, kw in it2.sent)
+def test_memories_show_what_she_can_find_in_the_chat_log_only_to_the_caller(cmd_kit):
+    it = call(cmd_kit, "記憶")
+    text = "\n".join(c for c, _ in it.sent if c != "<defer>")
+    assert "今天去打球" in text and "晚上吃拉麵" in text and "我也想打球" not in text  # 不填對象＝自己說的
+    assert all(kw.get("ephemeral") is True for _, kw in it.sent)
+    nobody = call(cmd_kit, "記憶", user_id="9")  # 聊天紀錄裡沒有的人：那句「還沒有」也只有自己看得到
+    assert all(kw.get("ephemeral") is True for _, kw in nobody.sent)
+
+
+def test_memories_keyword_search_uses_the_chat_log(cmd_kit):
+    it = call(cmd_kit, "記憶", 關鍵字="打球")
+    text = "\n".join(c for c, _ in it.sent if c != "<defer>")
+    assert "今天去打球" in text and "我也想打球" in text and "拉麵" not in text
+    assert all(kw.get("ephemeral") is True for _, kw in it.sent)
+
+
+def test_retired_memory_commands_explain_instead_of_failing(cmd_kit):
+    for it in (call(cmd_kit, "忘記", 記憶id="abcd1234"), call(cmd_kit, "白板")):
+        (content, kw), = it.sent
+        assert "停用" in content and kw.get("ephemeral") is True
 
 
 # ---------- 個資掃描：每個要 push 的 commit 都看 ----------

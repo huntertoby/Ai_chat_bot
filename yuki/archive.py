@@ -55,7 +55,7 @@ def to_simplified(text: str) -> str:
 def fts_text(content: str) -> str:
     """斷詞後用空白接起來。先轉簡體再斷：jieba 的詞典以簡體為主，繁體會被切爛
     （「麥當勞」→「吃麥」「當勞」；轉簡體後是「麦当劳」）。索引和查詢都走這裡，所以一致。"""
-    from .memory.text_index import tokenize
+    from .text_index import tokenize
     return " ".join(tokenize(to_simplified(content)))
 
 
@@ -139,6 +139,12 @@ class ArchiveDB:
 
     def commit(self) -> None:
         self.db.commit()
+
+    def authors(self, guild_id: str) -> list[tuple[str, str]]:
+        """這個伺服器封存區裡講過話的人：[(user ID, 最近用的名字)]。"""
+        return self.db.execute(
+            "SELECT author_id, author_name FROM messages WHERE guild_id=? AND id IN "
+            "(SELECT MAX(id) FROM messages WHERE guild_id=? GROUP BY author_id)", (guild_id, guild_id)).fetchall()
 
     def opted_out(self, guild_id: str | None = None) -> set[str]:
         """打過 /不要記我 的人。以人為單位：在任何伺服器（或私訊）打的都算，guild_id 不影響結果

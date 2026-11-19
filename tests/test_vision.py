@@ -11,8 +11,7 @@ from PIL import Image
 
 from yuki import trace, vision
 from yuki.llm import LMStudioClient
-from yuki.memory.writer import ChatLine
-from yuki.rag.decompose import Person
+from yuki.chat import ChatLine, Person
 
 CDN = "https://cdn.discordapp.com/attachments/1/2/"
 XIAO = Person("1", "小傑")

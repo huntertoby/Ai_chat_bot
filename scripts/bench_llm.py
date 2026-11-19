@@ -11,7 +11,7 @@ _s = load_settings()
 URL = _s.lmstudio_base_url.rstrip("/") + "/chat/completions"; M = sys.argv[1] if len(sys.argv) > 1 else _s.llm_model
 files = sorted(glob.glob("data/profiles/*/*.md"), key=os.path.getsize, reverse=True)[:4]
 profiles = [(f"成員{i}", open(f, encoding="utf-8").read()[:1500]) for i, f in enumerate(files)]
-system = prompts.reply_system("Yuki", ["群組最近在打世界賽"] * 5, [], date.today(), profiles, web=False)
+system = prompts.reply_system("Yuki", date.today(), profiles, web=False)
 hist = [{"role": "user", "content": f"[成員{i%4}] 今天打LoL又輸了 第{i}場 隊友真的很爛 上路一直送"} for i in range(19)]
 def msgs(q): return [{"role": "system", "content": system}] + hist + [{"role": "user", "content": f"[hunterchiao] yuki {q}"}]
 async def one(c, q, max_tokens=150):

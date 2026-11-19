@@ -13,8 +13,5 @@ discord-ext-voice-recv>=0.5.2a179  # 收音
 silero-vad>=6.2           # 判斷講完一句
 qwen-asr>=0.0.6           # Qwen3-ASR
 edge-tts>=7.3.1           # 7.2.7 被微軟擋（403）
-# 本機 embedding（bge-m3）與 rerank（Qwen3-Reranker-4B 或 bge-reranker-v2-m3），需要 PyTorch
-sentence-transformers>=5.4  # 5.4 起才能直接載入 Qwen3-Reranker
-# bitsandbytes  # 選用：用 Qwen3-Reranker 並設 RERANK_QUANTIZE=4bit 時才需要
 # 開發 / 測試
 pytest>=8

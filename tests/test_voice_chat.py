@@ -9,7 +9,7 @@ from yuki import prompts
 from yuki.brain import Brain
 from yuki.profile.auto import ProfileUpdater
 from yuki.profile.store import ProfileFiles
-from yuki.rag.decompose import Person
+from yuki.chat import Person
 from yuki.voice.asr import asr_context
 from yuki.voice.segmenter import Segmenter
 from yuki.voice.session import ListenSink, should_reply
@@ -127,8 +127,8 @@ def test_asr_context():
 
 
 def test_spoken_prompt():
-    assert "語音頻道裡用講的" in prompts.reply_system("Yuki", [], [], spoken=True)
-    assert "語音頻道裡用講的" not in prompts.reply_system("Yuki", [], [])
+    assert "語音頻道裡用講的" in prompts.reply_system("Yuki", spoken=True)
+    assert "語音頻道裡用講的" not in prompts.reply_system("Yuki")
 
 
 def test_profile_falls_back_to_main_guild(tmp_path):
@@ -136,12 +136,11 @@ def test_profile_falls_back_to_main_guild(tmp_path):
     from dataclasses import replace
 
     from yuki.config import Settings
-    from yuki.memory.store import MemoryStore
-
+    
     def brain(fallback):
         st = replace(Settings(), profile_enabled=True, profile_max_people=4, profile_prompt_chars=500,
                      profile_fallback_guild=fallback, profile_dir=tmp_path)
-        return Brain(st, SimpleNamespace(), MemoryStore(":memory:", "fake"), None, None)
+        return Brain(st, SimpleNamespace())
 
     ProfileFiles(tmp_path).write("main", "2", "# Toby\n喜歡打 LoL")
     assert brain("main").pick_profiles("test", "c", Person("2", "Toby")) == [("Toby", "喜歡打 LoL")]
@@ -158,9 +157,9 @@ def test_profile_updater_skips_test_guilds():
 
 
 def test_owner_rules_only_when_owner_set():
-    p = prompts.reply_system("Yuki", [], [], owner="hunterchiao")
+    p = prompts.reply_system("Yuki", owner="hunterchiao")
     assert "hunterchiao 是把你弄進群組" in p and "一起噴他" in p
-    assert "關於" not in prompts.reply_system("Yuki", [], []).split("規則：")[0]
+    assert "關於" not in prompts.reply_system("Yuki").split("規則：")[0]
 
 
 def test_names_in_finds_names_in_text():
@@ -173,7 +172,7 @@ def test_names_in_finds_names_in_text():
 
 
 def test_voice_reply_rules_are_short():
-    p = prompts.reply_system("Yuki", [], [], spoken=True, web=True)
+    p = prompts.reply_system("Yuki", spoken=True, web=True)
     assert "30 個字以內" in p and "查完只講結論" in p
 
 

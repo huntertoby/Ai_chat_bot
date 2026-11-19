@@ -5,18 +5,14 @@ from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 
-import numpy as np
-
 from yuki.archive import ArchiveDB, ArchivedMessage
 from yuki.archive_sync import ArchiveSync
 from yuki.brain import Brain
 from yuki.config import Settings
-from yuki.memory.store import MemoryStore
-from yuki.memory.writer import ChatLine
+from yuki.chat import Person
 from yuki.optout import forget_everywhere
 from yuki.profile.auto import ProfileUpdater
 from yuki.profile.store import Fact, ProfileDB, ProfileFiles
-from yuki.rag.decompose import Person
 from yuki.voice_presence import VoicePresence
 
 MAIN, TEST, OTHER = "main", "test", "other"
@@ -43,8 +39,8 @@ def stores(tmp_path):
     voice = VoicePresence(sqlite3.connect(":memory:"))
     pdb = ProfileDB(":memory:")
     files = ProfileFiles(tmp_path / "profiles")
-    mem = MemoryStore(":memory:", "fake")
-    return SimpleNamespace(archive=arch, sync=sync, voice=voice, profile_db=pdb, profiles=files, memories=mem)
+    return SimpleNamespace(archive=arch, sync=sync, voice=voice, profile_db=pdb, profiles=files,
+                           legacy_db=tmp_path / "yuki.db")
 
 
 def test_opting_out_in_a_test_server_deletes_main_server_data_too(tmp_path):
@@ -54,10 +50,12 @@ def test_opting_out_in_a_test_server_deletes_main_server_data_too(tmp_path):
     s.profiles.write(MAIN, "1", "# 阿明\n愛打球")
     s.profile_db.save_segment(MAIN, "c-main", 1, [Fact("3", "小美", "fact", "要考期末考", "high", "2026-11-01")])
     s.profile_db.save_segment(OTHER, "c-other", 2, [Fact("3", "小美", "fact", "覺得考試難", "high", "2026-11-01")])
-    vec = np.ones(4, dtype=np.float32)
-    s.memories.add(MAIN, "小美要考期末考", vec, subject_id="3", subject_name="小美")
-    s.memories.add(OTHER, "阿明說要幫忙", vec, subject_id="1", subject_name="阿明", author_id="3")  # 她講的話產生的
-    s.memories.add(MAIN, "阿明在打球", vec, subject_id="1", subject_name="阿明", author_id="1")
+    legacy = sqlite3.connect(s.legacy_db)  # 舊版 RAG 的記憶庫（已不再使用，資料還在）
+    legacy.execute("CREATE TABLE memories (id TEXT, guild_id TEXT, subject_id TEXT, author_id TEXT, text TEXT)")
+    legacy.executemany("INSERT INTO memories VALUES (?,?,?,?,?)", [
+        ("a", MAIN, "3", None, "小美要考期末考"), ("b", OTHER, "1", "3", "阿明說要幫忙"),  # 她講的話產生的
+        ("c", MAIN, "1", "1", "阿明在打球")])
+    legacy.commit()
     s.voice.update(MAIN, "3", "小美", None, ("v", "語音"), datetime(2026, 11, 1, 20))
     s.voice.update(OTHER, "3", "小美", None, ("v2", "語音"), datetime(2026, 11, 1, 20))
     assert "3" not in s.sync.skip(MAIN)  # 先快取一份舊的退出名單
@@ -67,7 +65,7 @@ def test_opting_out_in_a_test_server_deletes_main_server_data_too(tmp_path):
     assert (f.messages, f.profiles, f.facts, f.memories, f.voice) == (2, 3, 2, 2, 2)
     left = s.archive.db.execute("SELECT author_id FROM messages").fetchall()
     assert left == [("1",)]
-    assert [m.text for m in s.memories.list(MAIN)] == ["阿明在打球"] and s.memories.list(OTHER) == []
+    assert legacy.execute("SELECT text FROM memories").fetchall() == [("阿明在打球",)]
     assert s.profiles.read(MAIN, "1")  # 別人的檔案不受影響
     # 之後每個伺服器都不再收她的訊息（包括退出前就快取過名單的伺服器）
     assert "3" in s.sync.skip(MAIN) and "3" in s.sync.skip(OTHER)
@@ -82,10 +80,10 @@ def test_archive_opt_out_removes_messages_from_search_index_in_every_server():
 
 
 def make_brain(tmp_path, opted_out=()):
-    settings = replace(Settings(), retrieval="agentic", web_enabled=False, profile_enabled=True,
+    settings = replace(Settings(), web_enabled=False, profile_enabled=True,
                        profile_dir=tmp_path / "profiles", profile_fallback_guild=MAIN, profile_max_people=4)
     llm = SimpleNamespace(_slots=asyncio.Semaphore(1))
-    brain = Brain(settings, llm, MemoryStore(":memory:", "fake"), None, None)
+    brain = Brain(settings, llm)
     brain.opted_out = lambda: set(opted_out)
     brain.profiles.write(MAIN, "3", "# 小美\n喜歡貓")
     brain.profiles.write(MAIN, "1", "# 阿明\n愛打球")
@@ -109,21 +107,6 @@ def test_chat_search_never_returns_messages_from_opted_out_people(tmp_path):
     out = asyncio.run(tools.call("search_chat", {"keywords": ["期末考"]}))
     assert "阿明" in out and "我下週要考期末考" not in out
     assert "沒有" in asyncio.run(tools.call("get_profile", {"name": "小美"}))
-
-
-def test_old_memory_writer_never_buffers_opted_out_peoples_lines(tmp_path):
-    brain = make_brain(tmp_path, opted_out={"3"})
-    brain.settings = replace(brain.settings, retrieval="embedding", passive_batch=99)
-
-    async def go():
-        brain.buffer(MAIN, "c", ChatLine(XIAOMEI, "我搬家了"))
-        brain.buffer(MAIN, "c", ChatLine(AMING, "恭喜"))
-        lines = [l.author.name for l in brain._pending["c"]]
-        for t in brain._idle_timers.values():
-            t.cancel()
-        return lines
-
-    assert asyncio.run(go()) == ["阿明"]
 
 
 def test_profile_updater_never_builds_a_file_for_someone_who_opted_out(tmp_path):
@@ -150,3 +133,9 @@ def test_profile_updater_never_builds_a_file_for_someone_who_opted_out(tmp_path)
     asyncio.run(up.run_once(MAIN))
     assert merged == ["1"] and not files.read(MAIN, "3")
     assert [r[0] for r in db.stats(MAIN)] == ["1"]
+
+
+def test_old_memory_database_is_never_created_just_to_forget_someone(tmp_path):
+    from yuki import legacy_memory
+    assert legacy_memory.forget_person(tmp_path / "yuki.db", "3") == 0
+    assert not (tmp_path / "yuki.db").exists()

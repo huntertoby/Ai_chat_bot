@@ -80,5 +80,5 @@ def test_opted_out_users_are_not_recorded_and_can_be_forgotten():
 
 
 def test_voice_section_only_when_given():
-    assert "【語音頻道現況】" in prompts.reply_system("Yuki", [], [], voice="- #LoL：阿明")
-    assert "【語音頻道現況】" not in prompts.reply_system("Yuki", [], [])
+    assert "【語音頻道現況】" in prompts.reply_system("Yuki", voice="- #LoL：阿明")
+    assert "【語音頻道現況】" not in prompts.reply_system("Yuki")

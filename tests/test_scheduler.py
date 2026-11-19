@@ -7,7 +7,7 @@ import pytest
 
 from yuki.chime import Decision
 from yuki.config import Settings
-from yuki.rag.decompose import Person
+from yuki.chat import Person
 from yuki.scheduler import ReplyScheduler, Turn
 
 AMING, XIAOJIE, XIAOMEI = Person("1", "阿明"), Person("2", "小傑"), Person("3", "小美")

@@ -198,6 +198,16 @@ class ArchiveTools:
                     lines.append("    ↳ " + f.line(100))
         return note + "\n".join(lines)
 
+    def recent(self, user_id: str, n: int = 20) -> list[Hit]:
+        """這個人最近說的 n 則（舊到新）。/不要記我 的人回空的。"""
+        if user_id in self.skip:
+            return []
+        rows = self.db.execute(
+            "SELECT id, created_at, CASE WHEN parent_name != '' THEN parent_name ELSE channel_name END,"
+            " author_name, content FROM messages WHERE guild_id=? AND author_id=? AND content != ''"
+            " ORDER BY id DESC LIMIT ?", (self.guild_id, user_id, n)).fetchall()
+        return [Hit(i, ts, ch, au, c, 0.0) for i, ts, ch, au, c in reversed(rows)]
+
     # ---------- read_chat ----------
     def context(self, message_id: int, before: int = 8, after: int = 8) -> list[Hit]:
         row = self.db.execute("SELECT channel_id FROM messages WHERE id=? AND guild_id=?",

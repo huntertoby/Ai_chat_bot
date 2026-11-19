@@ -15,8 +15,7 @@ from discord.ext import voice_recv
 from .. import alert, trace
 from ..brain import to_traditional
 from ..llm import LLMError
-from ..memory.writer import ChatLine
-from ..rag.decompose import Person
+from ..chat import ChatLine, Person
 from .asr import asr_context
 from .names import NicknameCache
 from .dave import decrypt_error_count, patch_reader

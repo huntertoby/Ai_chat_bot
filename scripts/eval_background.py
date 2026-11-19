@@ -22,8 +22,7 @@ from yuki.archive import ArchiveDB
 from yuki.bot import ARCHIVE_PATH
 from yuki.brain import OPTOUT_SEARCH_BLOCKED, Brain, names_in
 from yuki.config import load_settings
-from yuki.memory.store import MemoryStore
-from yuki.rag.decompose import Person
+from yuki.chat import Person
 
 from ._eval_b_common import EVAL_DIR, RESULT_DIR, load_jsonl, make_llm, to_line
 
@@ -93,8 +92,7 @@ async def main() -> None:
     args = ap.parse_args()
     s = load_settings()
     llm = make_llm(s)
-    settings = replace(s, retrieval="agentic", web_enabled=True)
-    brain = Brain(settings, llm, MemoryStore(":memory:", "fake"), None, None)
+    brain = Brain(replace(s, web_enabled=True), llm)
     brain.archive_db = ArchiveDB(ARCHIVE_PATH).db
     cases = load_jsonl(EVAL_DIR / "background_cases.jsonl")
     if args.group:

@@ -5,11 +5,7 @@ from urllib.parse import quote
 
 from yuki.brain import OPTOUT_SEARCH_BLOCKED, Brain, web_names_hit
 from yuki.config import Settings
-from yuki.memory.store import MemoryStore
-from yuki.memory.writer import ChatLine
-from yuki.rag.decompose import Person
-
-from conftest import FakeEmbedder
+from yuki.chat import ChatLine, Person
 
 AMING = Person("1", "阿明")
 XIAOMEI = Person("3", "小美")
@@ -30,11 +26,10 @@ class OneToolLLM:
         return "好喔"
 
 
-def reply_with(tool, args, *, members=(), opted_out=(), optout_names=(), retrieval="agentic"):
+def reply_with(tool, args, *, members=(), opted_out=(), optout_names=()):
     llm = OneToolLLM(tool, args)
-    settings = replace(Settings(), retrieval=retrieval, web_enabled=True, decompose_with_llm=False,
-                       llm_rerank="off", query_rewrite=False)
-    brain = Brain(settings, llm, MemoryStore(":memory:", "fake"), FakeEmbedder(), None)
+    settings = replace(Settings(), web_enabled=True)
+    brain = Brain(settings, llm)
     brain.opted_out = lambda: set(opted_out)
     brain.optout_names = lambda: set(optout_names)
     sent = []
@@ -72,12 +67,6 @@ def test_opted_out_name_hidden_in_an_encoded_url_is_blocked():
 def test_opted_out_name_blocked_even_when_not_in_this_conversation_member_list():
     """私訊時成員名單是空的：靠 bot 給的「退出的人在各伺服器的名字」擋。"""
     sent, results = reply_with("web_search", {"query": "小美 在哪"}, members=[], optout_names={"小美"})
-    assert sent == [] and results == [OPTOUT_SEARCH_BLOCKED]
-
-
-def test_old_retrieval_path_blocks_opted_out_names_too():
-    sent, results = reply_with("open_url", {"url": "https://x.example/小美"}, members=[XIAOMEI],
-                               opted_out={"3"}, retrieval="embedding")
     assert sent == [] and results == [OPTOUT_SEARCH_BLOCKED]
 
 

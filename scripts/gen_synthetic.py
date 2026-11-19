@@ -6,8 +6,8 @@
   1. personas：10 個虛構成員的人設（身份、興趣、口味、朋友關係）
   2. arcs：每人每年 6~10 個生活主線（換工作、搬家、交往、改變口味…），每月記憶都依照主線發展
   3. days：每人每月一次呼叫，產生當月每一天的記憶（含前一個月的結尾當上下文）
-  4. import：算 bge-m3 向量寫進 data/synthetic.db（created_at = 記憶的日期）
-  5. eval：抽樣記憶請 LLM 出題，產生 eval/synthetic_cases.jsonl 給 scripts.eval_retrieval 用
+  4. import：寫進 data/synthetic.db 的 memories 表（created_at = 記憶的日期；scripts.eval_agentic 會轉成暫存封存區）
+  5. eval：抽樣記憶請 LLM 出題，產生 eval/synthetic_cases.jsonl 給 scripts.eval_agentic 用
 
 每個階段都會存檔，中斷後重跑會從斷點繼續。
 
@@ -24,14 +24,15 @@ import calendar
 import json
 import logging
 import random
+import sqlite3
 import time
+import uuid
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from yuki.config import ROOT, load_settings
-from yuki.embedding import build_embedder
 from yuki.llm import LLMError, LMStudioClient
-from yuki.memory.store import MemoryStore
 
 log = logging.getLogger("gen_synthetic")
 
@@ -214,20 +215,31 @@ async def gen_days(llm, personas, arcs, sem, month_list, stats) -> None:
 
 
 # ================= 4. import =================
+def synth_db() -> sqlite3.Connection:
+    """合成記憶的資料表（欄位跟舊版記憶庫一樣；embedding 已經不用，留空）。"""
+    DB.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(str(DB))
+    db.execute("CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, subject_id TEXT,"
+               " subject_name TEXT NOT NULL DEFAULT '', text TEXT NOT NULL, author_id TEXT, created_at TEXT NOT NULL,"
+               " updated_at TEXT NOT NULL, embedding BLOB NOT NULL)")
+    return db
+
+
 async def do_import(settings) -> None:
     rows = [json.loads(l) for l in DAYS.read_text(encoding="utf-8").splitlines() if l.strip()]
     rows.sort(key=lambda r: r["date"])
-    embedder = build_embedder(settings)
-    store = MemoryStore(DB, embedder.model_name)
-    existing = {(m.subject_id, m.created_at[:10], m.text) for m in store.all_rows()}
+    db = synth_db()
+    existing = {(sid, ts[:10], text) for sid, ts, text in
+                db.execute("SELECT subject_id, created_at, text FROM memories")}
     todo = [r for r in rows if (r["user_id"], r["date"], r["text"]) not in existing]
     t = time.time()
     for i in range(0, len(todo), 256):
         batch = todo[i:i + 256]
-        vecs = await embedder.embed_docs([r["text"] for r in batch])
-        for r, v in zip(batch, vecs):
-            store.add(GUILD, r["text"], v, subject_id=r["user_id"], subject_name=r["name"],
-                      author_id=r["user_id"], created_at=f"{r['date']} 21:00:00")
+        db.executemany("INSERT INTO memories (id, guild_id, subject_id, subject_name, text, author_id, created_at,"
+                       " updated_at, embedding) VALUES (?,?,?,?,?,?,?,?,?)",
+                       [(uuid.uuid4().hex[:8], GUILD, r["user_id"], r["name"], r["text"], r["user_id"],
+                         f"{r['date']} 21:00:00", f"{r['date']} 21:00:00", b"") for r in batch])
+        db.commit()
         print(f"\r匯入 {min(i + 256, len(todo))}/{len(todo)}", end="", flush=True)
     print(f"\n完成：{DB}（新增 {len(todo)} 筆，總共 {len(existing) + len(todo)} 筆，{time.time() - t:.0f}s）")
 
@@ -237,9 +249,8 @@ CASE_SCHEMA = obj({"question": STR})
 
 
 async def gen_cases(llm, personas, sem, n: int, seed: int) -> None:
-    embedder_name = build_embedder(load_settings()).model_name
-    store = MemoryStore(DB, embedder_name)
-    mems = store.list(GUILD)
+    mems = [SimpleNamespace(id=i, subject_id=sid, text=text, created_at=ts) for i, sid, text, ts in synth_db().execute(
+        "SELECT id, subject_id, text, created_at FROM memories WHERE guild_id=? ORDER BY created_at", (GUILD,))]
     rng = random.Random(seed)
     sample = rng.sample(mems, min(n, len(mems)))
     members = [{"id": p["id"], "name": p["name"]} for p in personas]

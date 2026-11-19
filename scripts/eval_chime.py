@@ -30,9 +30,7 @@ from yuki import chime, prompts, throttle
 from yuki.bot import wake_pattern
 from yuki.brain import Brain
 from yuki.config import load_settings
-from yuki.memory.store import MemoryStore
-from yuki.memory.writer import ChatLine
-from yuki.rag.decompose import Person
+from yuki.chat import ChatLine, Person
 from yuki.scheduler import ReplyScheduler, Turn, chime_limits, decide_options
 
 from ._eval_b_common import BOT_NAME, EVAL_DIR, RESULT_DIR, load_jsonl, make_llm, speed, to_line
@@ -354,8 +352,7 @@ async def real_replies(llm, s, points: list[dict], hist: list[ChatLine], n: int)
         return {"n": 0}
     step = max(len(points) // n, 1)
     chosen = points[::step][:n]
-    settings = replace(s, retrieval="agentic", web_enabled=True)
-    brain = Brain(settings, llm, MemoryStore(":memory:", "fake"), None, None)
+    brain = Brain(replace(s, web_enabled=True), llm)
     uniq = {l.author.id: Person(l.author.id, l.author.name) for l in hist if not l.is_bot}
     out = []
     for i, pt in enumerate(chosen, 1):

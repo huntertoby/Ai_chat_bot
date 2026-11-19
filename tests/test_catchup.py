@@ -9,10 +9,9 @@ import yuki.archive_sync as sync_mod
 from tests.conftest import FakeLLM
 from yuki.archive import ArchiveDB, ArchivedMessage
 from yuki.archive_sync import ArchiveSync
-from yuki.brain import Brain, memory_chunks
+from yuki.brain import Brain
 from yuki.config import Settings
-from yuki.memory.writer import ChatLine
-from yuki.rag.decompose import Person
+from yuki.chat import ChatLine, Person
 
 TOBY = Person("2", "Toby")
 T0 = datetime(2026, 11, 1, tzinfo=timezone.utc)
@@ -97,28 +96,9 @@ def test_live_messages_do_not_advance_progress_while_catching_up():
     assert not sync._may_advance("g", 3)                   # 補抓失敗的頻道留給下次
 
 
-# ---------- 整理成記憶 ----------
-def lines_at(*minutes):
-    base = datetime(2026, 11, 1, 12, 0)
-    return [(ChatLine(TOBY, f"msg {m}"), (base + timedelta(minutes=m)).strftime("%Y-%m-%d %H:%M:%S"))
-            for m in minutes]
-
-
-def test_memory_chunks_split_by_size_and_gap():
-    chunks = memory_chunks(lines_at(0, 1, 2, 3, 100, 101), batch=3, gap_minutes=30)
-    assert [[l.text for l, _ in c] for c in chunks] == [
-        ["msg 0", "msg 1", "msg 2"], ["msg 3"], ["msg 100", "msg 101"]]
-
-
-def test_brain_catch_up_seeds_history_and_dates_memories(store, embedder):
-    settings = replace(Settings(), retrieval="embedding", passive_batch=8, catchup_memory_max=300, history_messages=3,
-                       passive_enabled=True, catchup_memory=True)
-    reply = {"ops": [{"action": "add", "id": "", "subject": "Toby", "text": "Toby 在玩艾爾登法環"}],
-             "whiteboard": ""}
-    brain = Brain(settings, FakeLLM(json_reply=reply), store, embedder, None)
+# ---------- 補進對話紀錄 ----------
+def test_brain_catch_up_seeds_history_before_live_messages():
+    brain = Brain(replace(Settings(), history_messages=3), FakeLLM())
     brain.observe("c1", ChatLine(TOBY, "即時訊息"))  # 補抓期間已經收到的
-    n = asyncio.run(brain.catch_up("g", "c1", lines_at(0, 1, 2)))
-    assert n == 1
+    brain.catch_up("c1", [ChatLine(TOBY, f"msg {m}") for m in range(3)])
     assert [l.text for l in brain.history["c1"]] == ["msg 1", "msg 2", "即時訊息"]
-    mem = store.list("g")[0]
-    assert mem.created_at == "2026-11-01 12:02:00"  # 用訊息當時的時間，不是補抓那天

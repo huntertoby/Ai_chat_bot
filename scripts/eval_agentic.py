@@ -1,6 +1,6 @@
 """Agentic RAG 評估（開發規格 6.4）：讓 Yuki 用 search_chat / read_chat 自己查，看有沒有查到正確那筆。
 
-    python -m scripts.eval_agentic                       # 舊的 200 題（合成記憶，跟 eval_retrieval 同一份）
+    python -m scripts.eval_agentic                       # 合成 200 題（scripts.gen_synthetic 產生）
     python -m scripts.eval_agentic --limit 20            # 先跑 20 題看看
     python -m scripts.eval_agentic --cases eval/archive_cases.jsonl --real   # 真實封存區的題目
     python -m scripts.eval_agentic --cases eval/unknown_cases.jsonl --real --expect-unknown   # 查不到時有沒有說不知道
@@ -22,7 +22,7 @@ from yuki import prompts
 from yuki.archive import ArchiveDB, ArchivedMessage
 from yuki.config import ROOT, load_settings
 from yuki.llm import LMStudioClient
-from yuki.memory.text_index import add_words
+from yuki.text_index import add_words
 from yuki.tools.archive import TOOL_SPECS, ArchiveTools
 from yuki.bot import ARCHIVE_PATH
 
@@ -62,7 +62,7 @@ async def run_case(llm, db, case: dict, guild: str, *, rounds: int) -> dict:
         calls.append((name, args))
         return await tools.call(name, args)
 
-    system = prompts.reply_system("Yuki", [], None, today, archive=True)
+    system = prompts.reply_system("Yuki", today, archive=True)
     author = case["author"]["name"]
     messages = [{"role": "system", "content": system}, {"role": "user", "content": f"[{author}] {case['query']}"}]
     t = time.time()

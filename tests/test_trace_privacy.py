@@ -5,8 +5,7 @@ import pytest
 
 from botkit import Kit
 from yuki import trace
-from yuki.memory.writer import ChatLine, ReplyRef
-from yuki.rag.decompose import Person
+from yuki.chat import ChatLine, Person, ReplyRef
 
 AMING, XIAOJIE, XIAOMEI, YUKI = Person("1", "阿明"), Person("2", "小傑"), Person("3", "小美"), Person("9", "Yuki")
 

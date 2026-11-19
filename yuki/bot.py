@@ -21,14 +21,13 @@ from .archive_sync import ArchiveSync, is_public
 from .brain import Brain
 from .config import ROOT, Settings, load_settings
 from .llm import LLMError, LMStudioClient
-from .memory.text_index import add_words
-from .memory.writer import ChatLine, ReplyRef
+from .chat import ChatLine, Person, ReplyRef
 from .optout import forget_everywhere
 from .profile.auto import ProfileUpdater
 from .profile.builder import ProfileBuilder
 from .profile.store import ProfileDB
-from .rag.decompose import Person, decompose
 from .scheduler import ReplyScheduler, Turn, decide_options
+from .text_index import add_words
 from .voice_presence import VoicePresence
 
 if TYPE_CHECKING:
@@ -393,21 +392,15 @@ class YukiBot(commands.Bot):
             if not new:
                 continue
             total = sum(len(rows) for rows in new.values())
-            log.info("%s：補抓到 %d 則，開始整理成記憶（%d 個頻道）", guild.name, total, len(new))
-            chunks = 0
+            log.info("%s：補抓到 %d 則（%d 個頻道），補進對話紀錄", guild.name, total, len(new))
             for channel_id, rows in new.items():
-                lines = [(ChatLine(Person(r.author_id, r.author_name), r.content), r.created_at)
-                         for r in rows if r.content.strip()]
-                try:
-                    chunks += await self.brain.catch_up(str(guild.id), channel_id, lines)
-                except Exception:
-                    log.exception("整理補抓的訊息失敗（頻道 %s）", channel_id)
-            log.info("%s：補抓的訊息整理完成，共 %d 段", guild.name, chunks)
+                self.brain.catch_up(channel_id, [ChatLine(Person(r.author_id, r.author_name), r.content)
+                                                 for r in rows if r.content.strip()])
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         await self.sync_commands(guild)
 
-    # ---------- 成員名單（給查詢分解找人名用）----------
+    # ---------- 成員名單（查聊天紀錄時把名字對到人、上網時認出退出的人）----------
     def members_of(self, guild: discord.Guild | None) -> list[Person]:
         if guild is None:
             return []
@@ -429,10 +422,10 @@ class YukiBot(commands.Bot):
                     for alias in {m.display_name, m.name, getattr(m, "global_name", None)}:
                         if alias:
                             people.append(Person(str(m.id), alias))
-            # 記憶裡有、但已不在伺服器的人（退出的成員、匯入的測試資料）也要認得出名字
+            # 封存區裡講過話、但已不在伺服器的人（退出的成員、匯入的資料）也要認得出名字
             known = {p.id for p in people}
-            people += [Person(sid, name) for sid, name in self.brain.store.subjects(str(guild.id))
-                       if sid not in known]
+            people += [Person(uid, name) for uid, name in self.archive.authors(self.archive_guild(guild))
+                       if uid not in known and name]
             add_words([p.name for p in people])
             self._members[guild.id] = people
         return self._members[guild.id]
@@ -502,14 +495,14 @@ class YukiBot(commands.Bot):
                 log.exception("訊息存進封存區失敗")
         if throttle.is_flood(message.content, repeat_chars=s.flood_repeat_chars,
                              repeat_mentions=s.flood_repeat_mentions):
-            log.info("大量重複的訊息，不回、不進記憶（封存照常）")
+            log.info("大量重複的訊息，不回、不進對話紀錄（封存照常）")
             return
         if message.type not in (discord.MessageType.default, discord.MessageType.reply):
             return  # 加入、置頂、加成之類的系統訊息
         if throttle.is_command(message.content):
             return
         text = self.clean(message)
-        gid, cid = guild_key(message.guild, message.author), message.channel.id
+        cid = message.channel.id
         channel_key = str(cid)
         author = person(message.author)
         mentions = [person(u) for u in message.mentions if u != self.user and not u.bot]
@@ -534,8 +527,7 @@ class YukiBot(commands.Bot):
             reply_to, reply_id = self.reply_ref(message)
             line = ChatLine(author, text, images=images, msg_id=str(message.id), reply_to=reply_to,
                             reply_id=reply_id)
-            if self.brain.observe(channel_key, line) and (called or active or (s.passive_enabled and not test)):
-                self.brain.buffer(gid, channel_key, line, mentions)
+            self.brain.observe(channel_key, line)
 
         if leaving:  # 那句已經進對話紀錄了，她的道別也記進去
             self.replies.end_attention(cid)
@@ -654,7 +646,6 @@ class YukiBot(commands.Bot):
             self.replies.note_chimed(cid)
         bot_line = ChatLine(person(self.user), reply or "[貼圖]", is_bot=True)
         self.brain.observe(channel_key, bot_line)
-        self.brain.buffer(gid, channel_key, bot_line)
         return True
 
     # ---------- 沒被叫到：插話判斷（B2）----------
@@ -751,70 +742,44 @@ class YukiBot(commands.Bot):
 
 def register_commands(bot: YukiBot) -> None:
     """斜線指令。只註冊到 bot.tree，同步在 on_ready 時對每個伺服器做（伺服器指令立即生效）。"""
-    store = bot.brain.store
-
     async def send(interaction: discord.Interaction, header: str, lines: list[str], *,
                    ephemeral: bool = False) -> None:
         for chunk in split_message("\n".join([header, *lines])):
             await interaction.followup.send(chunk, ephemeral=ephemeral, allowed_mentions=NO_PING)
 
-    @bot.tree.command(name="記憶", description="看自己或某人的記憶；填關鍵字則用完整檢索流程搜尋（只有你看得到）")
-    @app_commands.describe(對象="要看誰的記憶（不填就是自己）", 關鍵字="語意搜尋，例如：大熊 昨天 頸椎")
+    @bot.tree.command(name="記憶", description="Yuki 在聊天紀錄裡找得到的：某人最近說的話，或含關鍵字的訊息（只有你看得到）")
+    @app_commands.describe(對象="看誰說的（不填：有關鍵字就不限人，沒有關鍵字就是自己）",
+                           關鍵字="用空白分開，任一個符合就算")
     async def memories(interaction: discord.Interaction, 對象: discord.Member | None = None,
                        關鍵字: str | None = None) -> None:
         # 只有本人看得到：結果可能含別人的事、或別的伺服器（測試伺服器借主伺服器）的聊天紀錄
-        await interaction.response.defer(thinking=True, ephemeral=True)  # 檢索 + LLM 重排可能超過 3 秒
+        await interaction.response.defer(thinking=True, ephemeral=True)
         gid = guild_key(interaction.guild, interaction.user)
+        # 跟 Yuki 的 search_chat 同一套（封存區全文檢索，/不要記我 的人查不到）
+        tools = bot.brain.archive_tools(gid, bot.archive_guild(interaction.guild), bot.members_of(interaction.guild))
         text = (關鍵字 or "").strip()
-        if not text:
-            who = 對象 or interaction.user
-            mems = store.list(gid, str(who.id))[:30]
-            if not mems:
-                await interaction.followup.send(f"我還沒有記住關於 {who.display_name} 的事喔！", ephemeral=True,
-                                                allowed_mentions=NO_PING)
-                return
-            await send(interaction, f"**關於 {who.display_name} 的記憶（{len(mems)} 筆）**",
-                       [f"`{m.id}` ({m.created_at[:10]}) {m.text}" for m in mems], ephemeral=True)
-            return
-        if bot.brain.agentic:
-            # 封存區全文檢索（跟 Yuki 的 search_chat 同一套）
-            tools = bot.brain.archive_tools(gid, bot.archive_guild(interaction.guild),
-                                            bot.members_of(interaction.guild))
+        if text:
             hits = tools.search(text.split(), person=對象.display_name if 對象 else "")
             await send(interaction, f"**聊天紀錄裡的「{text}」**",
                        [h.line() for h in sorted(hits, key=lambda h: h.id)] or ["（找不到）"], ephemeral=True)
             return
-        mentions = [person(對象)] if 對象 and not 對象.bot else []
-        subs = await decompose(text, person(interaction.user), mentions, bot.members_of(interaction.guild),
-                               wake_words=bot.settings.wake_words)
-        groups = await bot.brain.retriever.search(gid, subs)
-        lines = []
-        for sq, hits in zip(subs, groups):
-            label = sq.subject.name if sq.subject else "全體"
-            when = f"（時間：{sq.time.phrase} {sq.time.start}～{sq.time.end}）" if sq.time else ""
-            lines.append(f"__{label}：{sq.text}__{when}")
-            for h in hits[:5]:
-                score = f" ({h.score:.2f})" if h.score is not None else ""
-                lines.append(f"`{h.memory.id}` ({h.memory.created_at[:10]}) {h.memory.text}{score}")
-            if not hits:
-                lines.append("（沒有相關記憶）")
-        await send(interaction, f"**「{text}」的搜尋結果**", lines, ephemeral=True)
+        who = 對象 or interaction.user
+        hits = tools.recent(str(who.id))
+        if not hits:
+            await interaction.followup.send(f"聊天紀錄裡還沒有 {who.display_name} 說的話喔！", ephemeral=True,
+                                            allowed_mentions=NO_PING)
+            return
+        await send(interaction, f"**{who.display_name} 最近說的話（{len(hits)} 則）**", [h.line() for h in hits],
+                   ephemeral=True)
 
-    @bot.tree.command(name="忘記", description="刪除一筆記憶（只能刪關於自己的，管理員除外）")
-    @app_commands.describe(記憶id="記憶前面的 8 碼 ID，用 /記憶 查")
+    # 舊版 RAG 的事實記憶和白板：D-04 之後就不再更新、也不再給 Yuki 看，R1 移除了程式。
+    # 指令先留著回一句說明（不默默壞掉），要不要拿掉等使用者決定（R1 報告）。
+    retired = "這個功能已經停用了：Yuki 現在直接查聊天紀錄，不再另外記一條條的記憶或白板。想看她查得到什麼，用 /記憶。"
+
+    @bot.tree.command(name="忘記", description="（已停用）舊版的記憶刪除")
+    @app_commands.describe(記憶id="舊版記憶的 ID")
     async def forget(interaction: discord.Interaction, 記憶id: str) -> None:
-        mem = store.get(記憶id.strip("` "))
-        if mem is None or mem.guild_id != guild_key(interaction.guild, interaction.user):
-            await interaction.response.send_message("找不到這筆記憶。", ephemeral=True)
-            return
-        uid = str(interaction.user.id)
-        is_admin = interaction.guild is not None and interaction.user.guild_permissions.manage_guild
-        if uid not in (mem.subject_id, mem.author_id) and not is_admin:
-            await interaction.response.send_message("只能刪除關於自己的記憶喔（管理員除外）。", ephemeral=True)
-            return
-        store.delete(mem.id)
-        # 不重述內容：要刪的東西不該再被貼出來一次
-        await interaction.response.send_message(f"已忘記這筆記憶（`{mem.id}`）。", ephemeral=True)
+        await interaction.response.send_message(retired, ephemeral=True)
 
     @bot.tree.command(name="檔案", description="看 Yuki 整理的人物檔案（只有你看得到）")
     @app_commands.describe(對象="要看誰的檔案（不填就是自己）")
@@ -832,12 +797,16 @@ def register_commands(bot: YukiBot) -> None:
         gid = guild_key(interaction.guild, interaction.user)
         uid = str(interaction.user.id)
         await interaction.response.defer(ephemeral=True)
-        f = forget_everywhere(uid, gid, archive=bot.archive, sync=bot.sync, voice=bot.voice,
-                              profile_db=ProfileDB(bot.settings.profile_db_path), profiles=bot.brain.profiles,
-                              memories=bot.brain.store)
+        profile_db = ProfileDB(bot.settings.profile_db_path)
+        try:
+            f = forget_everywhere(uid, gid, archive=bot.archive, sync=bot.sync, voice=bot.voice,
+                                  profile_db=profile_db, profiles=bot.brain.profiles,
+                                  legacy_db=bot.settings.db_path)
+        finally:
+            profile_db.db.close()
         await interaction.followup.send(
             f"好，所有伺服器裡關於你的資料都刪掉了：人物檔案 {f.profiles} 份、整理過的資訊 {f.facts} 條、"
-            f"記憶 {f.memories} 筆、封存訊息 {f.messages} 則、語音紀錄 {f.voice} 筆。之後也不會再記你、整理你。",
+            f"舊的記憶 {f.memories} 筆、封存訊息 {f.messages} 則、語音紀錄 {f.voice} 筆。之後也不會再記你、整理你。",
             ephemeral=True)
 
     @bot.tree.command(name="來語音", description="叫 Yuki 進你所在的語音頻道")
@@ -866,14 +835,9 @@ def register_commands(bot: YukiBot) -> None:
         ok = interaction.guild is not None and await bot.end_voice(interaction.guild.id)
         await interaction.response.send_message("好，我先下去了～" if ok else "我本來就不在語音裡啊。")
 
-    @bot.tree.command(name="白板", description="顯示群組近況白板")
+    @bot.tree.command(name="白板", description="（已停用）舊版的群組近況白板")
     async def whiteboard(interaction: discord.Interaction) -> None:
-        items = store.whiteboard(guild_key(interaction.guild, interaction.user))
-        if not items:
-            await interaction.response.send_message("白板目前是空的。")
-            return
-        await interaction.response.defer()
-        await send(interaction, "**群組近況白板**", [f"- ({ts[:10]}) {t}" for _, t, ts in items])
+        await interaction.response.send_message(retired, ephemeral=True)
 
     @bot.tree.error
     async def on_app_command_error(interaction: discord.Interaction,

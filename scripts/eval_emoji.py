@@ -154,7 +154,7 @@ async def eval_reply(llm, eset: cat.EmojiSet, s) -> dict:
     rows = []
     for k, c in enumerate(cases, 1):
         allow = pacing.allow("eval")
-        system = prompts.reply_system(BOT_NAME, [], None, date.today(), [], emoji=block if allow else "")
+        system = prompts.reply_system(BOT_NAME, date.today(), [], emoji=block if allow else "")
         lines = [to_line(m, images=False) for m in c["recent"]] + [to_line(c["latest"], images=False)]
         messages = [{"role": "system", "content": system}] + to_messages(lines)
         raw = to_traditional(_NAME_PREFIX.sub("", await llm.chat(messages)))

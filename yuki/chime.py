@@ -17,7 +17,7 @@ from typing import Any, Awaitable, Callable, Iterable
 
 from . import prompts
 from .llm import LLMError
-from .memory.writer import REPLY_SNIPPET, ChatLine, ReplyRef
+from .chat import REPLY_SNIPPET, ChatLine, ReplyRef
 
 log = logging.getLogger(__name__)
 

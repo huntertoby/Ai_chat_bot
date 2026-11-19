@@ -101,8 +101,8 @@ def test_chat_tools_bad_arguments_do_not_crash():
 
 
 def test_web_rules_only_when_enabled():
-    assert "web_search" in prompts.reply_system("Yuki", [], [], web=True)
-    assert "web_search" not in prompts.reply_system("Yuki", [], [])
+    assert "web_search" in prompts.reply_system("Yuki", web=True)
+    assert "web_search" not in prompts.reply_system("Yuki")
 
 
 def test_chat_tools_retries_without_thinking_when_empty():
