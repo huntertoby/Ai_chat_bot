@@ -402,6 +402,7 @@ def fake_bot(llm, *, level=1, replying=0, history=(), **settings):
     me._hide_optouts = lambda tr, ck, people: botmod.YukiBot._hide_optouts(me, tr, ck, people)
     me._replied_person = botmod.YukiBot._replied_person
     me._fill_reply_refs = noop
+    me.emoji_set = lambda guild: None  # C1-2：預設這個伺服器沒有可用的圖鑑
     me.chime = lambda message, line, attention: botmod.YukiBot._chime(me, message, line, attention)
     return me, clk
 

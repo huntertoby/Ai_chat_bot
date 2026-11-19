@@ -146,15 +146,19 @@ def parse_decision(raw: dict | None) -> Decision:
 
 
 def build_messages(recent: list[ChatLine], latest: ChatLine, bot_name: str, images: Iterable[str] = (),
-                   attention: bool = False, context_lines: int = CONTEXT_LINES) -> list[dict]:
-    """[你是誰] 放 system；[最近的對話]、[最新訊息]（和最多幾張縮小的圖）放 user。"""
+                   attention: bool = False, context_lines: int = CONTEXT_LINES, emoji_block: str = "") -> list[dict]:
+    """[你是誰] 放 system；[最近的對話]、[最新訊息]（和最多幾張縮小的圖）放 user。
+    emoji_block：這個伺服器可以按的群組表情（一行一張，C1-2）；空字串＝不放（沒有圖鑑的伺服器）。"""
     shown = [_line_text(l, bot_name) for l in recent[-context_lines:]]
     images = list(images)
     text = prompts.chime_user(shown, _line_text(latest, bot_name), attention=attention, images=len(images))
     content: Any = text
     if images:
         content = [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]
-    return [{"role": "system", "content": prompts.CHIME_SYSTEM.format(bot_name=bot_name)},
+    system = prompts.CHIME_SYSTEM.format(bot_name=bot_name)
+    if emoji_block:
+        system += "\n\n" + prompts.CHIME_EMOJI.format(items=emoji_block)
+    return [{"role": "system", "content": system},
             {"role": "user", "content": content}]
 
 
@@ -166,7 +170,7 @@ def _line_text(line: ChatLine, bot_name: str) -> str:
 
 async def decide(llm, *, recent: list[ChatLine], latest: ChatLine, bot_name: str, images: Iterable[str] = (),
                  attention: bool = False, context_lines: int = CONTEXT_LINES, max_tokens: int = 160,
-                 use_logprobs: bool = True) -> Decision:
+                 use_logprobs: bool = True, emoji_block: str = "") -> Decision:
     """插話判斷（一次短的 LLM 呼叫，JSON schema、不思考）。
     use_logprobs（D-22）：開口機率從 action 那個位置的 token 機率算（Decision.prob_source="logprob"）；
     拿不到 logprobs 就退回模型寫的 participate（prob_source="participate"）。
@@ -175,7 +179,7 @@ async def decide(llm, *, recent: list[ChatLine], latest: ChatLine, bot_name: str
     images：最近幾則裡的圖（data URL，低解析度，最多幾張由呼叫端決定）；attention：她剛講過話，提示模型這則比較可能是在接她的話。
     LLM 連不上或回不出 JSON 時回傳帶 error 的 Decision（action=none），不丟例外。
     門檻和次數限制不在這裡：呼叫端用 `Decision.should_reply(threshold)` 和 `ChimeLimits` 決定。"""
-    messages = build_messages(recent, latest, bot_name, images, attention, context_lines)
+    messages = build_messages(recent, latest, bot_name, images, attention, context_lines, emoji_block)
     t0 = time.monotonic()
     lp = None
     try:

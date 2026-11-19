@@ -25,7 +25,7 @@ from .tools.web import TOOL_SPECS, WebTools
 
 _TO_TW = None
 # 回覆開頭的 [名字]，或對話紀錄格式 [小傑 回覆 阿明「…」]（引用片段可能很長、含 ]）
-_NAME_PREFIX = re.compile(r"^\s*(?:\[[^\]\n「]{1,32}回覆[^\n]{0,200}?」\]|\[[^\]\n]{1,32}\])\s*")
+_NAME_PREFIX = re.compile(r"^\s*(?:\[[^\]\n「]{1,32}回覆[^\n]{0,200}?」\]|\[(?!貼圖)[^\]\n]{1,32}\])\s*")
 
 
 MEMBER_SEARCH_BLOCKED = "（不能拿群組成員的名字上網搜尋：成員的事只看記憶和人物檔案。直接回答就好。）"
@@ -212,14 +212,15 @@ class Brain:
     async def reply(self, guild_id: str, channel_key: str, author: Person, text: str, *,
                     mentions: list[Person] = (), members: list[Person] = (), voice: str = "",
                     spoken: bool = False, owner: str = "", archive_guild: str = "",
-                    background: list[str] = (), chimed: bool = False) -> str:
-        """archive_guild：agentic 檢索查哪個伺服器的封存區（測試伺服器借主伺服器的）。
+                    background: list[str] = (), chimed: bool = False, emoji: str = "") -> str:
+        """emoji：群組表情清單（給 prompt 用；後處理在 bot.py）。
+        archive_guild：agentic 檢索查哪個伺服器的封存區（測試伺服器借主伺服器的）。
         background：插話判斷給的 need_background（B4 第 2 層），回覆前先查；chimed：這次是她自己決定插話。"""
         if self.agentic:
             return await self._reply_agentic(guild_id, channel_key, author, text, mentions=mentions,
                                              members=members, voice=voice, spoken=spoken, owner=owner,
                                              archive_guild=archive_guild or guild_id,
-                                             background=background, chimed=chimed)
+                                             background=background, chimed=chimed, emoji=emoji)
         today = date.today()
         subs = await decompose(text, author, list(mentions), list(members),
                                wake_words=self.settings.wake_words,
@@ -238,7 +239,8 @@ class Brain:
         images = await self.collect_images(lines, spoken=spoken)
         system = prompts.reply_system(self.settings.bot_name, whiteboard, memories, today, profiles,
                                       web=self.web is not None, voice=voice, spoken=spoken,
-                                      owner=owner, vision=bool(images), background=background, chimed=chimed)
+                                      owner=owner, vision=bool(images), background=background, chimed=chimed,
+                                      emoji=emoji)
         messages = [{"role": "system", "content": system}] + vision.attach(to_messages(lines), images)
         if self.web:
             # 成員的名字不准拿去搜尋：會把朋友的學校、工作之類的個資送到外部搜尋引擎
@@ -283,7 +285,7 @@ class Brain:
 
     async def _reply_agentic(self, guild_id: str, channel_key: str, author: Person, text: str, *, mentions,
                              members, voice: str, spoken: bool, owner: str, archive_guild: str,
-                             background=(), chimed: bool = False) -> str:
+                             background=(), chimed: bool = False, emoji: str = "") -> str:
         """不先檢索：只帶發言者（和 @ 到的人）的人物檔案；群組的事讓 Yuki 自己用工具查。"""
         s = self.settings
         today = date.today()
@@ -294,7 +296,7 @@ class Brain:
         system = prompts.reply_system(s.bot_name, whiteboard, None, today, profiles, web=self.web is not None,
                                       voice=voice, spoken=spoken, owner=owner,
                                       archive=self.archive_db is not None, vision=bool(images),
-                                      background=background, chimed=chimed)
+                                      background=background, chimed=chimed, emoji=emoji)
         messages = [{"role": "system", "content": system}] + vision.attach(to_messages(lines), images)
 
         everyone = [author, *mentions, *members]

@@ -16,7 +16,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from . import alert, chime, throttle, trace, vision
+from . import alert, chime, emoji_catalog, throttle, trace, vision
 from .archive import ArchiveDB
 from .archive_sync import ArchiveSync, is_public
 from .brain import Brain
@@ -104,6 +104,7 @@ class YukiBot(commands.Bot):
         alert.set_default(self.alerter)
         logging.getLogger().addHandler(alert.AlertLogHandler(self.alerter))
         self._health_task: asyncio.Task | None = None
+        self.emoji_sets = emoji_catalog.load_all()  # 只有 reviewed 的圖鑑（C1-2）
         self.brain = Brain.build(settings)
         self.active_until: dict[int, float] = {}   # 被叫到之後的注意模式
         self.chime_until: dict[int, float] = {}    # 她自己插話之後的注意時間（只影響閉嘴判斷和插話的 attention 提示）
@@ -206,6 +207,7 @@ class YukiBot(commands.Bot):
                     log.exception("同步斜線指令到 %s 失敗", guild.name)
         for guild in self.guilds:
             self._snapshot_voice(guild)
+        self._sync_emoji_sets()
         # 每次 on_ready 都補抓：第一次是補關機期間，之後是斷線又無法恢復連線時補缺口
         if self.settings.catchup_enabled:
             task = self.loop.create_task(self._catch_up_all())
@@ -343,6 +345,25 @@ class YukiBot(commands.Bot):
             return False
         ids = self.settings.chime_guild_ids or self.settings.test_guild_ids
         return str(guild.id) in ids
+
+    def emoji_set(self, guild: discord.Guild | None) -> emoji_catalog.EmojiSet | None:
+        """這個伺服器可以用的表情圖鑑：EMOJI_GUILD_IDS（留空＝只有測試伺服器）、reviewed，而且是**這個伺服器自己**的
+        圖鑑（不會借別的伺服器的，PROFILE_FALLBACK_GUILD 的圖鑑不會出現在測試伺服器）。"""
+        if guild is None:
+            return None
+        ids = self.settings.emoji_guild_ids or self.settings.test_guild_ids
+        gid = str(guild.id)
+        return self.emoji_sets.get(gid) if gid in ids else None
+
+    def _sync_emoji_sets(self) -> None:
+        """啟動時比對 guild.emojis：圖鑑有、伺服器已刪的不用；新增或改名的記在 log（自動補建之後再做）。"""
+        for guild in self.guilds:
+            eset = self.emoji_sets.get(str(guild.id))
+            if eset is None:
+                continue
+            rep = eset.sync(guild.emojis, guild.stickers)
+            log.info("表情圖鑑比對（%s）：已刪 %d、改名 %d、新增（圖鑑沒有）%d，可用 %d 張",
+                     guild.id, len(rep["removed"]), len(rep["renamed"]), len(rep["new"]), len(eset))
 
     def is_test_guild(self, guild: discord.Guild | None) -> bool:
         """測試伺服器：不封存、不在背景整理記憶（私人伺服器的頻道可能有密碼之類的東西）。"""
@@ -612,6 +633,7 @@ class YukiBot(commands.Bot):
         tr = trace.start("reply", guild=message.guild.id if message.guild else "", channel=cid,
                          trigger=turn.trigger, user_ids=[author.id, *(m.id for m in mentions)])
         self._hide_optouts(tr, channel_key, self._replied_person(message))
+        eset = self.emoji_set(message.guild)
         try:
             async with tr:
                 async with message.channel.typing():
@@ -621,7 +643,8 @@ class YukiBot(commands.Bot):
                                                    members=self.members_of(message.guild), voice=voice,
                                                    owner=self.owner_name(message.guild),
                                                    archive_guild=self.archive_guild(message.guild),
-                                                   background=turn.background, chimed=turn.chimed)
+                                                   background=turn.background, chimed=turn.chimed,
+                                                   emoji=eset.prompt_block() if eset else "")
                 tr.final = reply
         except LLMError as e:
             # 用 warning：ERROR 會被 AlertLogHandler 當成另一種錯誤再通知一次
@@ -633,19 +656,25 @@ class YukiBot(commands.Bot):
             return False
         finally:
             self._replying -= 1
-        if not reply:
+        # 群組表情：`:名稱:` 換成 <:名稱:ID>、壞名稱刪掉、一則最多一個；貼圖另外附（沒有圖鑑也會把 :xxx: 清掉）
+        reply, sticker = emoji_catalog.process_reply(reply, eset)
+        if not reply and not sticker:
             if turn.chimed:
                 return False
             reply = "……我腦袋突然一片空白，再說一次？"
 
-        for i, chunk in enumerate(split_message(reply)):
+        stickers = [discord.Object(id=int(sticker))] if sticker else None
+        chunks = split_message(reply) if reply else [None]
+        for i, chunk in enumerate(chunks):
+            last = i == len(chunks) - 1
+            kw = {"stickers": stickers} if last and stickers else {}
             if i == 0:
-                await message.reply(chunk, mention_author=False)
+                await message.reply(chunk, mention_author=False, **kw)
             else:
-                await message.channel.send(chunk)
+                await message.channel.send(chunk, **kw)
         if turn.chimed:  # 自己插話成功：開一段注意時間，對方接話（沒用回覆功能）也算接她的話
             self.chime_until[cid] = time.monotonic() + s.attention_timeout
-        bot_line = ChatLine(person(self.user), reply, is_bot=True)
+        bot_line = ChatLine(person(self.user), reply or "[貼圖]", is_bot=True)
         self.brain.observe(channel_key, bot_line)
         self.brain.buffer(gid, channel_key, bot_line)
         return True
@@ -724,9 +753,11 @@ class YukiBot(commands.Bot):
                     tr.final = json.dumps(info, ensure_ascii=False)
                     return None
                 idx = next((i for i, l in enumerate(hist) if l is line), len(hist))
+                eset = self.emoji_set(message.guild)  # 有 reviewed 的圖鑑才放表情清單、才限制只能按圖鑑裡的
                 d = await chime.decide(self.brain.llm, recent=hist[:idx], latest=line, bot_name=s.bot_name,
                                        images=images, attention=attention, context_lines=s.chime_context_lines,
-                                       max_tokens=s.chime_max_tokens, use_logprobs=s.chime_use_logprobs)
+                                       max_tokens=s.chime_max_tokens, use_logprobs=s.chime_use_logprobs,
+                                       emoji_block=eset.react_block() if eset else "")
                 tr.lat("decide", d.ms)
                 info.update(decision=d.to_dict(), threshold=self.limits.threshold, prob=round(d.participate, 3),
                             prob_source=d.prob_source, images=len(images))
@@ -748,7 +779,12 @@ class YukiBot(commands.Bot):
                 elif d.should_react(0.0):
                     # 按表情不看門檻（模型已經選了 react），但有自己的次數限制，也受同人同類一天一次限制
                     gate = self.limits.react_gate(cid)
-                    emoji = chime.resolve_emoji(d.emoji, message.guild.emojis if message.guild else ())
+                    wanted = d.emoji
+                    if eset is not None:  # 名稱（含別名）換成真名；圖鑑裡沒有的群組表情不按
+                        is_name, wanted = eset.react_name(d.emoji)
+                        if is_name and not wanted:
+                            wanted = ""
+                    emoji = chime.resolve_emoji(wanted, message.guild.emojis if message.guild else ())
                     if gate:
                         skip(gate)
                     elif not self.limits.kind_ok(uid, d.kind, attention=attention):

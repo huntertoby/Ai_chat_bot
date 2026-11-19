@@ -5,13 +5,18 @@ import re
 
 _URL = re.compile(r"https?://\S+")
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]")
+_CUSTOM_EMOJI = re.compile(r"<a?:\w+:\d+>")  # <:名稱:ID>、<a:名稱:ID>
+_SHORTCODE = re.compile(r"(?<![\w:]):\w{1,40}:(?![\w:])")  # :名稱:
+_STICKER_TAG = re.compile(r"[\[［]\s*貼圖\s*[:：][^\]］\n]*[\]］]")  # [貼圖:名稱]
 _PAREN = re.compile(r"[（(][^（）()]{0,40}[）)]")
 _SENT = re.compile(r"(?<=[。！？!?…~～\n])")
 
 
 def speakable(text: str) -> str:
-    """念不出來或念出來很怪的東西拿掉：網址、表情符號、XD、括號補充、markdown 符號。"""
+    """念不出來或念出來很怪的東西拿掉：網址、群組表情和貼圖、表情符號、XD、括號補充、markdown 符號。"""
     text = _URL.sub("", text)
+    text = _STICKER_TAG.sub("", _CUSTOM_EMOJI.sub("", text))
+    text = _SHORTCODE.sub("", text)  # 群組表情不能念出 ID（C1-2）
     text = _EMOJI.sub("", text)
     text = re.sub(r"(?i)(?<![a-z])x+d+(?![a-z])", "", text)  # 中文旁邊的 XD 也要拿掉（\b 不行）
     text = _PAREN.sub("", text)
