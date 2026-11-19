@@ -50,5 +50,9 @@ def test_eval_uses_production_decide_options_unless_overridden(monkeypatch):
     assert eval_chime.decide_opts(s)["use_logprobs"] is False and eval_chime.decide_opts(s)["context_lines"] == 9
     monkeypatch.setattr(eval_chime, "USE_LOGPROBS", True)
     assert eval_chime.decide_opts(s)["use_logprobs"] is True
+    monkeypatch.setattr(eval_chime, "THINK_ON_MENTION", None)  # D-29 兩段式也照正式設定
+    assert eval_chime.decide_opts(replace(s, chime_think_on_mention=True))["think_on_mention"] is True
+    monkeypatch.setattr(eval_chime, "THINK_ON_MENTION", False)
+    assert eval_chime.decide_opts(replace(s, chime_think_on_mention=True))["think_on_mention"] is False
     monkeypatch.setattr(eval_chime, "THRESHOLD", None)
     assert eval_chime.threshold(replace(s, chime_in=2, chime_threshold=None)) == 0.6

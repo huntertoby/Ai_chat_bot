@@ -173,6 +173,10 @@ class Settings:
     chime_context_lines: int = field(default_factory=lambda: _int("CHIME_CONTEXT_LINES", 15))
     chime_max_images: int = field(default_factory=lambda: _int("CHIME_MAX_IMAGES", 3))
     chime_max_tokens: int = field(default_factory=lambda: _int("CHIME_MAX_TOKENS", 160))
+    # D-29 兩段式：最新一則提到她（名字、別名、@、回覆她、機器人／AI、她剛講完的他／她／它）才先思考再判斷，
+    # 其他照舊不思考。思考一次約 5 秒、會佔住 LM Studio
+    chime_think_on_mention: bool = field(default_factory=lambda: _bool("CHIME_THINK_ON_MENTION", False))
+    chime_think_max_tokens: int = field(default_factory=lambda: _int("CHIME_THINK_MAX_TOKENS", 4000))
     # 被叫「閉嘴」「沒問你」之後，這個頻道多久不主動插話
     chime_mute_minutes: float = field(default_factory=lambda: _float("CHIME_MUTE_MINUTES", 30))
     # 按表情：每個頻道每 N 分鐘最多幾個（跟插話次數分開算）

@@ -172,6 +172,56 @@ def test_decide_never_raises_on_llm_error_or_bad_json():
     assert d.error == "no_json" and d.action == "none"
 
 
+# ---------- D-29：提到她才思考（兩段式）----------
+def test_mentions_bot_heuristic():
+    names = ["Yuki", "yuki"]
+    yuki_said = [ChatLine(AMING, "嗨"), ChatLine(YUKI, "幹嘛", is_bot=True)]
+    m = lambda text, recent=(), **kw: chime.mentions_bot(ChatLine(XIAOJIE, text, **kw), list(recent), names)
+    assert m("Yuki 好爛") and m("@Yuki 在嗎") and m("yuki才是正品")
+    assert not m("yukio 是誰")                                   # 英文名字要整個字相符
+    assert m("這機器人蠻有趣的") and m("那個 AI 又在亂講") and m("bot 掛了")
+    assert not m("我在 aim 練槍") and not m("他今天沒來")           # 她沒在最近講話：「他」是在講別人
+    assert m("他不敢回答", yuki_said)                              # 她剛講完：「他」可能是她
+    assert not m("你怎麼看", yuki_said)                            # 單純「你」不開思考（不思考就判得對）
+    assert m("對啊", reply_to=ReplyRef("Yuki", True, "幹嘛"))       # 回覆她
+    far = [ChatLine(YUKI, "幹嘛", is_bot=True)] + [ChatLine(AMING, f"{i}") for i in range(6)]
+    assert not m("他不敢回答", far)                                # 她是好幾則以前講的
+
+
+def test_decide_thinks_only_when_latest_mentions_her():
+    llm = JsonLLM(GOOD)
+    d = run(decide(llm, recent=[], latest=ChatLine(AMING, "這機器人好吵"), bot_name="Yuki", think_on_mention=True,
+                   think_max_tokens=3000))
+    _, kw = llm.kw[0]
+    assert d.path == "think" and kw["reasoning_effort"] == "low" and kw["max_tokens"] == 3000
+    assert d.to_dict()["path"] == "think"
+    llm2 = JsonLLM(GOOD)
+    d2 = run(decide(llm2, recent=[], latest=ChatLine(AMING, "我考上了"), bot_name="Yuki", think_on_mention=True))
+    assert d2.path == "fast" and llm2.kw[0][1]["reasoning_effort"] == "none"
+    llm3 = JsonLLM(GOOD)  # 預設關：提到她也不思考
+    d3 = run(decide(llm3, recent=[], latest=ChatLine(AMING, "這機器人好吵"), bot_name="Yuki"))
+    assert d3.path == "fast" and llm3.kw[0][1]["reasoning_effort"] == "none"
+
+
+def test_decide_think_path_skips_logprobs():
+    class LpLLM(JsonLLM):
+        async def chat_json_logprobs(self, *a, **kw):
+            raise AssertionError("思考時不取 logprobs")
+    llm = LpLLM(GOOD)
+    d = run(decide(llm, recent=[], latest=ChatLine(AMING, "Yuki 好爛"), bot_name="Yuki", think_on_mention=True,
+                   use_logprobs=True))
+    assert d.path == "think" and d.prob_source == "participate"
+
+
+def test_d29_kinds_split_to_me_and_about_me():
+    assert {"to_me", "about_me"} <= set(chime.KINDS)
+    assert parse_decision({**GOOD, "kind": "to_me"}).kind == "to_me"
+    assert set(prompts.CHIME_SCHEMA["properties"]["kind"]["enum"]) == set(chime.KINDS)
+    assert {"to_me", "about_me"} <= set(chime.KIND_EXEMPT_IN_ATTENTION)
+    order = prompts.CHIME_SCHEMA["required"]
+    assert order.index("action") < order.index("reason")  # 先決定再寫理由
+
+
 def test_llm_is_busy_follows_slots():
     sem = asyncio.Semaphore(1)
     llm = NS(_slots=sem)

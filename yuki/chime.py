@@ -21,14 +21,15 @@ from .chat import REPLY_SNIPPET, ChatLine, ReplyRef
 
 log = logging.getLogger(__name__)
 
-KINDS = ("congrats", "comfort", "answer", "addon", "about_me", "other")
+KINDS = ("congrats", "comfort", "answer", "addon", "to_me", "about_me", "other")
 ACTIONS = ("reply", "react", "none")
 CONTEXT_LINES = 15
 
 # CHIME_IN 等級 → (門檻, 同頻道主動插話的最短間隔秒數)；0 = 只有被叫才回
 LEVELS: dict[int, tuple[float, float]] = {1: (0.7, 600.0), 2: (0.6, 300.0), 3: (0.5, 120.0)}
-# 被叫到的情況，這些類別不受「同人同類一天一次」限制（對話延續，不是主動搭話）
-KIND_EXEMPT_IN_ATTENTION = ("about_me", "answer")
+# 被叫到的情況，這些類別不受「同人同類一天一次」限制（對話延續，不是主動搭話）。
+# D-29：to_me＝在跟她講話；about_me＝別人在講她（只有被嘲笑、挑釁才會開口）
+KIND_EXEMPT_IN_ATTENTION = ("to_me", "about_me", "answer")
 
 # 對她說「沒問你」「閉嘴」這類話
 _SHUSH = re.compile(r"沒問你|沒在問你|沒有問你|閉嘴|乾你屁事|干你屁事|關你屁事|管你屁事|不關你的事|不干你的事|你很吵|吵死了")
@@ -55,6 +56,7 @@ class Decision:
     prob_source: str = "participate"
     model_participate: float = 0.0  # 模型自己寫的 participate（logprob 來源時只留作參考）
     action_dist: dict | None = None  # action 位置各選項的機率（評估離線分析用）
+    path: str = "fast"             # D-29：fast＝不思考；think＝最新一則提到她，先思考再判斷
 
     def should_reply(self, threshold: float) -> bool:
         if self.error:
@@ -73,7 +75,7 @@ class Decision:
     def to_dict(self) -> dict:
         return {"participate": self.participate, "action": self.action, "emoji": self.emoji, "kind": self.kind,
                 "reason": self.reason, "need_background": self.need_background, "ms": self.ms,
-                "prob_source": self.prob_source, "model_participate": self.model_participate,
+                "prob_source": self.prob_source, "model_participate": self.model_participate, "path": self.path,
                 **({"action_dist": {k: round(v, 5) for k, v in self.action_dist.items()}} if self.action_dist else {}),
                 **({"error": self.error} if self.error else {})}
 
@@ -169,9 +171,37 @@ def _line_text(line: ChatLine, bot_name: str) -> str:
     return line.render_chat()
 
 
+# ---------- D-29：最新一則有沒有提到她（決定要不要開思考）----------
+_ROBOT = re.compile(r"機器人|(?<![A-Za-z])(?:bot|ai)(?![A-Za-z])", re.IGNORECASE)
+_THIRD_PERSON = re.compile(r"[他她它]")
+MENTION_WINDOW = 5  # 她在最近幾則內講過話，最新一則的「他／她／它」才算可能在講她
+
+
+def mentions_bot(latest: ChatLine, recent: list[ChatLine], names: Iterable[str],
+                 window: int = MENTION_WINDOW) -> bool:
+    """最新一則是不是可能在講她或跟她講（規則，0 成本）：
+    名字或別名（含 @名字；英數字的名字要整個字相符）、回覆她、說「機器人／bot／AI」、
+    或她在最近 window 則內講過話而這則用了「他／她／它」。
+    單純的「你」不算：那類代名詞題不思考也判得對，開思考只會變慢。"""
+    text = latest.text or ""
+    for n in names:
+        n = (n or "").strip()
+        if not n:
+            continue
+        pat = (r"(?<![A-Za-z0-9])" + re.escape(n) + r"(?![A-Za-z0-9])") if n.isascii() else re.escape(n)
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    if latest.reply_to is not None and latest.reply_to.is_bot:
+        return True
+    if _ROBOT.search(text):
+        return True
+    return bool(_THIRD_PERSON.search(text) and any(l.is_bot for l in recent[-window:]))
+
+
 async def decide(llm, *, recent: list[ChatLine], latest: ChatLine, bot_name: str, images: Iterable[str] = (),
                  attention: bool = False, context_lines: int = CONTEXT_LINES, max_tokens: int = 160,
-                 use_logprobs: bool = True, emoji_block: str = "") -> Decision:
+                 use_logprobs: bool = True, emoji_block: str = "", think_on_mention: bool = False,
+                 think_max_tokens: int = 4000, aliases: Iterable[str] = ()) -> Decision:
     """插話判斷（一次短的 LLM 呼叫，JSON schema、不思考）。
     use_logprobs（D-22）：開口機率從 action 那個位置的 token 機率算（Decision.prob_source="logprob"）；
     拿不到 logprobs 就退回模型寫的 participate（prob_source="participate"）。
@@ -179,12 +209,18 @@ async def decide(llm, *, recent: list[ChatLine], latest: ChatLine, bot_name: str
     recent：最新那則「之前」的對話（舊到新，內部只取最後 context_lines 則）；latest：要判斷的那則；
     images：最近幾則裡的圖（data URL，低解析度，最多幾張由呼叫端決定）；attention：她剛講過話，提示模型這則比較可能是在接她的話。
     LLM 連不上或回不出 JSON 時回傳帶 error 的 Decision（action=none），不丟例外。
-    門檻和次數限制不在這裡：呼叫端用 `Decision.should_reply(threshold)` 和 `ChimeLimits` 決定。"""
+    門檻和次數限制不在這裡：呼叫端用 `Decision.should_reply(threshold)` 和 `ChimeLimits` 決定。
+    think_on_mention（D-29，CHIME_THINK_ON_MENTION）：最新一則提到她（`mentions_bot`）時改成先思考再判斷
+    （慢，約 5 秒，但「對她說／在講她」分得比較清楚）；其他訊息照舊不思考。思考時不取 logprobs。"""
     messages = build_messages(recent, latest, bot_name, images, attention, context_lines, emoji_block)
+    think = think_on_mention and mentions_bot(latest, recent[-context_lines:], [bot_name, *aliases])
     t0 = time.monotonic()
     lp = None
     try:
-        if use_logprobs and hasattr(llm, "chat_json_logprobs"):
+        if think:
+            raw = await llm.chat_json(messages, prompts.CHIME_SCHEMA, name="chime", temperature=0.0,
+                                      max_tokens=think_max_tokens, reasoning_effort="low")
+        elif use_logprobs and hasattr(llm, "chat_json_logprobs"):
             raw, lp = await llm.chat_json_logprobs(messages, prompts.CHIME_SCHEMA, name="chime", temperature=0.0,
                                                    max_tokens=max_tokens)
         else:
@@ -194,12 +230,13 @@ async def decide(llm, *, recent: list[ChatLine], latest: ChatLine, bot_name: str
         d = Decision(error=f"llm: {e}"[:200])
     else:
         d = parse_decision(raw)
-        if not d.error and use_logprobs:
+        if not d.error and use_logprobs and not think:
             dist = action_dist(lp)
             d.model_participate, d.action_dist = d.participate, dist
             p = action_prob(lp) if dist else None
             if p is not None:
                 d.participate, d.prob_source = p, "logprob"
+    d.path = "think" if think else "fast"
     d.ms = round((time.monotonic() - t0) * 1000)
     return d
 
