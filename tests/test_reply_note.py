@@ -47,13 +47,19 @@ def test_note_lists_her_recent_openings():
     assert "「幹 阿明 又」「好喔那我」" in note and "換一種開頭" in note
 
 
-def test_note_has_only_the_swear_line_when_nothing_else_applies_and_none_when_latest_is_hers():
-    assert latest_note([ChatLine(AMING, "嗨")], "Yuki") == prompts.latest_note([prompts.LATEST_NOTE_NO_SWEAR])
+def test_no_user_note_when_only_the_swear_line_applies_it_goes_to_system_instead():
+    assert latest_note([ChatLine(AMING, "嗨")], "Yuki") == ""
     assert latest_note([ChatLine(AMING, "嗨"), bot("嗨")], "Yuki") == ""
     assert latest_note([], "Yuki") == ""
+    msgs = reply_messages("SYS", [ChatLine(AMING, "嗨")], "Yuki")
+    assert msgs == [{"role": "system", "content": "SYS" + chr(10) * 2 + prompts.LATEST_NOTE_NO_SWEAR},
+                    {"role": "user", "content": "[阿明] 嗨"}]
+    # 最新一則是她自己的：什麼都不加
+    assert reply_messages("SYS", [ChatLine(AMING, "嗨"), bot("嗨")], "Yuki")[0]["content"] == "SYS"
 
 
 def test_reply_messages_appends_the_note_to_the_last_user_message_only():
+    # 有提示時 system 不動、提示（含髒話那句）接在最新一則後面
     lines = [ChatLine(AMING, "嗨"), bot("幹 阿明"), ChatLine(AMING, "前文"), ChatLine(AMING, "你比 @小傑 強吧")]
     msgs = reply_messages("SYS", lines, "Yuki", [XIAOJIE])
     assert msgs[:3] == [{"role": "system", "content": "SYS"}, {"role": "user", "content": "[阿明] 嗨"},
@@ -112,8 +118,11 @@ def test_d36_swearing_follows_the_last_five_lines_from_others_only():
     old = [ChatLine(XIAOJIE, "幹 好爛")] + [ChatLine(AMING, "嗨"), bot("好")] * 5
     assert not others_swore(old)
     assert others_swore(old[:-2])  # 少一則別人的，髒話那則回到最近 5 則內
+    # 有其他提示時跟著附在最新一則後面
     assert prompts.LATEST_NOTE_SWEAR_OK in latest_note([ChatLine(XIAOJIE, "靠北"), ChatLine(AMING, "你說呢")], "Yuki")
     assert prompts.LATEST_NOTE_NO_SWEAR in latest_note(clean, "Yuki")
+    # 只有一句：放 system
+    assert reply_messages("SYS", [ChatLine(AMING, "靠北喔")], "Yuki")[0]["content"].endswith(prompts.LATEST_NOTE_SWEAR_OK)
 
 
 def test_d36_persona_says_follow_others_and_never_starts_it():

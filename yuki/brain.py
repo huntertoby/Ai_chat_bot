@@ -130,7 +130,7 @@ def recent_openings(lines: list[ChatLine], n: int = RECENT_OPENINGS, k: int = OP
 
 
 def latest_note(lines: list[ChatLine], bot_name: str, mentions=()) -> str:
-    """這次回覆的提示（R2）：要接哪一則、最新一則 @ 到的人是誰、她最近幾則的開頭、能不能講髒話（D-36）。都是程式算出來的事實。"""
+    """這次回覆的提示（R2）：要接哪一則、最新一則 @ 到的人是誰、她最近幾則的開頭、D-36 髒話那句。都是程式算出來的事實；只有髒話那句可說時回空字串（那句改放 system）。"""
     if not lines or lines[-1].is_bot:
         return ""
     last = lines[-1]
@@ -152,17 +152,28 @@ def latest_note(lines: list[ChatLine], bot_name: str, mentions=()) -> str:
         parts.append(prompts.LATEST_NOTE_AT.format(names="、".join(names)))
     if heads := recent_openings(lines):
         parts.append(prompts.LATEST_NOTE_OPENINGS.format(items="".join(f"「{h}」" for h in heads)))
-    parts.append(prompts.LATEST_NOTE_SWEAR_OK if others_swore(lines) else prompts.LATEST_NOTE_NO_SWEAR)
-    return prompts.latest_note(parts)
+    if not parts:
+        return ""
+    return prompts.latest_note(parts + [swear_note(lines)])
+
+
+def swear_note(lines: list[ChatLine]) -> str:
+    """D-36：最近 5 則別人的訊息有人講髒話 → 可以跟著講；都沒有 → 這次不要講。"""
+    return prompts.LATEST_NOTE_SWEAR_OK if others_swore(lines) else prompts.LATEST_NOTE_NO_SWEAR
 
 
 def reply_messages(system: str, lines: list[ChatLine], bot_name: str, mentions=()) -> list[dict]:
     """回覆用的 messages：system＋對話紀錄，最新一則 user 訊息後面用括號附上這次回覆的提示（latest_note）。
-    R2 實測：放在 system 最後的話，她比較常去查聊天紀錄（閒聊也查）、開頭重複也壓不太下來，所以接在最新一則後面。"""
+    R2 實測：提示放 system 最後時，她比較常去查聊天紀錄、開頭重複也壓不太下來，所以接在最新一則後面。
+    D-36 髒話那句每次都要有：有其他提示時跟著一起附在後面；沒有（例如只有一句提問）就只放 system 最後，
+    單獨接一個括號在提問後面會讓查聊天紀錄變差（R2 實測）。"""
     msgs = to_messages(lines)
-    note = latest_note(lines, bot_name, mentions)
-    if note and msgs and msgs[-1]["role"] == "user":
+    if not lines or lines[-1].is_bot or not msgs or msgs[-1]["role"] != "user":
+        return [{"role": "system", "content": system}] + msgs
+    if note := latest_note(lines, bot_name, mentions):
         msgs[-1] = {**msgs[-1], "content": msgs[-1]["content"] + "\n\n（" + note + "）"}
+    else:
+        system += "\n\n" + swear_note(lines)
     return [{"role": "system", "content": system}] + msgs
 
 
