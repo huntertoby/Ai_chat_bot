@@ -64,6 +64,9 @@ def test_more_shapes_seen_in_r3_runs():
     assert broken_reason("阿凱：我哪知道他會打多爛啦", others=others) == "echo"   # 替別人講話
     assert broken_reason("阿凱 你主管真的很誇張", others=others) == ""
     assert broken_reason("2026-03-18 那天你也這樣說", others=others) == ""
+    assert broken_reason("好，沒有特別的背景。阿凱就是被主管叫加班在煩，要我幫他罵一下。輕鬆接就好。", others=others) == "meta"
+    # 正常的回嘴（R3 小評估裡被舊規則誤擋過一次）
+    assert broken_reason("阿凱你報告都沒寫還在嘴我，明天才交欸，先把你那篇搞定啦。", others=others) == ""
     assert broken_reason("阿明 2026-07-13 21:48 你覺得值得買嗎", others=[("阿明", "你覺得值得買嗎")]) == "echo"
 
 
