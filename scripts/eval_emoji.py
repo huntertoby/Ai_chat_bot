@@ -29,7 +29,7 @@ from pathlib import Path
 
 from yuki import chime, emoji_catalog as cat, prompts
 from yuki.archive import ArchiveDB
-from yuki.brain import _NAME_PREFIX, reply_messages, to_traditional
+from yuki.brain import checked_chat
 from yuki.config import ROOT, load_settings
 from yuki.voice.tts import speakable
 
@@ -156,8 +156,7 @@ async def eval_reply(llm, eset: cat.EmojiSet, s) -> dict:
         allow = pacing.allow("eval")
         system = prompts.reply_system(BOT_NAME, date.today(), [], emoji=block if allow else "")
         lines = [to_line(m, images=False) for m in c["recent"]] + [to_line(c["latest"], images=False)]
-        messages = reply_messages(system, lines, BOT_NAME)  # 跟 Brain.reply 一樣附上最新一則的提示
-        raw = to_traditional(_NAME_PREFIX.sub("", await llm.chat(messages)))
+        raw = await checked_chat(llm.chat, system, lines, BOT_NAME)  # 跟 Brain.reply 一樣（提示、壞掉檢查）
         text, sticker = cat.process_reply(raw, eset, allow=allow)
         rs = raw_stats(raw, eset)
         used = bool(CUSTOM.search(text)) or bool(sticker)

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from yuki import prompts
 from yuki.archive import ArchiveDB, ArchivedMessage
-from yuki.brain import reply_messages
+from yuki.brain import checked_chat
 from yuki.chat import ChatLine, Person
 from yuki.config import ROOT, load_settings
 from yuki.llm import LMStudioClient
@@ -66,12 +66,14 @@ async def run_case(llm, db, case: dict, guild: str, *, rounds: int) -> dict:
 
     system = prompts.reply_system("Yuki", today, archive=True)
     author = case["author"]["name"]
-    # 跟 Brain.reply 一樣組 messages（最新一則後面附「這次回覆」的提示，R2／D-36）
-    messages = reply_messages(system, [ChatLine(Person(author, author), case["query"])], "Yuki")
+    # 跟 Brain.reply 一樣組 messages（R2／D-36 的提示、R3 的壞掉檢查都在 checked_chat 裡）
+    lines = [ChatLine(Person(author, author), case["query"])]
     t = time.time()
-    reply = await llm.chat_tools(messages, TOOL_SPECS, call, max_rounds=rounds)
+    stats: dict = {}
+    reply = await checked_chat(lambda m: llm.chat_tools(m, TOOL_SPECS, call, max_rounds=rounds), system, lines, "Yuki",
+                               stats=stats)  # 跟 Brain.reply 一樣：壞掉的回覆會重生（R3）
     return {"query": case["query"], "expected": case["expected"], "seen": tools.seen, "calls": calls,
-            "reply": reply, "seconds": round(time.time() - t, 2)}
+            "reply": reply, "seconds": round(time.time() - t, 2), "check": stats}
 
 
 JUDGE = """你是評分員。判斷「回覆」有沒有正確回答「問題」：回覆的重點要跟「參考資料」的答案對得上
