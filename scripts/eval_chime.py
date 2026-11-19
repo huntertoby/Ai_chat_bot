@@ -4,10 +4,13 @@
     python -m scripts.eval_chime --only chime    # chime / milestone / flood（可重複）
     python -m scripts.eval_chime --only flood --reply-sec 10 --no-real-replies
     python -m scripts.eval_chime --tag shut_up   # 只跑 chime 題目裡帶這個 tag 的
+    python -m scripts.eval_chime --only chime --route --cases chime_cases_d32.jsonl   # D-32 整條路
 
 - chime：每題 decide()（參數跟正式設定一樣，scheduler.decide_options）；插話 = should_reply(門檻)，
   門檻預設＝正式設定（CHIME_IN 等級或 CHIME_PROB_THRESHOLD），react 另外統計，不算插話。talk_to_me 類在正式流程是被叫到直接回，
   題目多半沒叫名字（靠「你」），所以用 attention=True（她剛講完）；其他類 attention = 前一則是不是她講的。
+- chime --route（D-32）：整條路。最新一則先用正式的觸發規則（yuki/wake.py）看算不算「叫她」
+  （@Yuki、回覆她、直接叫名字）→ 算就直接當「回」，不呼叫模型；不算才走 decide()。不帶 --route 只測插話判斷。
 - milestone：里程碑應插話、轉貼不應；圖縮成 512px 傳入。
 - 速度：每題 Decision.ms 的中位數與 P90（標準 <= 0.6 秒）；兩段式（CHIME_THINK_ON_MENTION）另外列不思考那條路的速度。
 - flood：用模擬時間重播人類訊息，算「會回幾則」。節流、熱鬧模式、排隊合併、插話前後的限制、注意時間
@@ -31,7 +34,7 @@ from yuki.brain import Brain
 from yuki.config import load_settings
 from yuki.chat import ChatLine, Person
 from yuki.scheduler import ReplyScheduler, Turn, chime_limits, decide_options
-from yuki.wake import wake_pattern
+from yuki.wake import direct_call, wake_pattern
 
 from ._eval_b_common import BOT_NAME, EVAL_DIR, RESULT_DIR, load_jsonl, make_llm, speed, to_line
 
@@ -75,14 +78,29 @@ async def run_decide(llm, case: dict, *, attention: bool | None = None, s=None):
     return d, attention
 
 
+def route_called(latest: dict, s, wake: re.Pattern | None = None) -> bool:
+    """D-32 整條路的第一步：最新一則算不算「叫她」（一定回、不進插話判斷）。
+    題目裡的「@Yuki」字樣代表真的 tag 她（跟洗版重播一樣）；回覆她的訊息；直接叫名字（yuki/wake.py）。"""
+    content = latest.get("content", "")
+    ref = latest.get("reply_to") or {}
+    wake = wake or wake_pattern(s.wake_words)
+    return ("@" + BOT_NAME in content or bool(ref.get("is_yuki"))
+            or direct_call(content, wake, s.exit_words))
+
+
 # ---------------------------------------------------------------- chime 50 題
-async def eval_chime(llm, s, tag: str | None) -> dict:
-    cases = load_jsonl(EVAL_DIR / "chime_cases.jsonl")
+async def eval_chime(llm, s, tag: str | None, *, cases_file: str = "chime_cases.jsonl", route: bool = False) -> dict:
+    cases = load_jsonl(EVAL_DIR / cases_file)
     if tag:
         cases = [c for c in cases if tag in c.get("tags", [])]
+    wake = wake_pattern(s.wake_words)
     rows = []
     for i, c in enumerate(cases, 1):
-        d, att = await run_decide(llm, c, s=s)
+        if route and route_called(c["latest"], s, wake):  # 被叫到：正式流程直接回，不問模型
+            d = chime.Decision(participate=1.0, action="reply", kind="to_me", reason="route:called", path="called")
+            att = False
+        else:
+            d, att = await run_decide(llm, c, s=s)
         pred = d.should_reply(threshold(s))
         row = {"id": c["id"], "label": c["label"], "tags": c.get("tags", []), "expect": c["expect_participate"],
                "pred": pred, "react": d.should_react(threshold(s)), "attention": att,
@@ -102,20 +120,23 @@ async def eval_chime(llm, s, tag: str | None) -> dict:
         if rs:
             by_tag[t] = f"{sum(r['ok'] for r in rs)}/{len(rs)}"
     by_path = {}
-    for pth in ("fast", "think"):
+    for pth in ("fast", "think", "called"):
         rs = [r for r in rows if r["decision"].get("path", "fast") == pth]
         if rs:
             by_path[pth] = {"n": len(rs), "correct": sum(r["ok"] for r in rs),
                             "speed": speed([r["decision"]["ms"] for r in rs])}
     loose = sum(((r["pred"] or r["react"]) == r["expect"]) for r in rows) / max(n, 1)
     kinds = Counter((r["expect"], r["pred"]) for r in rows)
-    return {"sweep": sweep_chime(rows), "n": n, "accuracy": round(sum(r["ok"] for r in rows) / max(n, 1), 3),
+    judged = [r for r in rows if r["decision"].get("path") != "called"]
+    return {"cases": cases_file, "route": route,
+            "called_ids": [r["id"] for r in rows if r["decision"].get("path") == "called"],
+            "sweep": sweep_chime(rows), "n": n, "accuracy": round(sum(r["ok"] for r in rows) / max(n, 1), 3),
             "accuracy_react_counts": round(loose, 3), "by_label": by, "by_tag": by_tag, "by_path": by_path,
             "pronoun": {"n": len(pro), "correct": sum(r["ok"] for r in pro), "all_correct": all(r["ok"] for r in pro)},
             "false_positive": kinds[(False, True)], "false_negative": kinds[(True, False)],
             "react_count": sum(r["react"] for r in rows),
             "errors": sum(bool(r["decision"].get("error")) for r in rows),
-            "speed": speed([r["decision"]["ms"] for r in rows]),
+            "speed": speed([r["decision"]["ms"] for r in judged]),  # 只算有問模型的題
             "failed": [{k: r[k] for k in ("id", "label", "expect", "pred", "react", "attention")}
                        | {"participate": r["decision"]["participate"], "action": r["decision"]["action"],
                           "kind": r["decision"]["kind"]} for r in rows if not r["ok"]],
@@ -199,10 +220,11 @@ def _ts(m: dict) -> float:
     return datetime.strptime(m["time"], "%Y-%m-%d %H:%M:%S").timestamp()
 
 
-def strip_call(text: str, wake: re.Pattern) -> str:
-    """跟 bot.clean 一樣：拿掉 @Yuki 和喚醒詞。"""
-    text = text.replace("@Yuki", " ")
-    return re.sub(r"\s+", " ", wake.sub(" ", text)).strip(" ,，")
+def strip_call(text: str, wake: re.Pattern, *, strip_name: bool = True) -> str:
+    """跟 bot.clean 一樣：叫她的訊息拿掉 @Yuki 和喚醒詞；D-32 只是提到她（走插話判斷）的保留名字。"""
+    if strip_name:
+        text = wake.sub(" ", text.replace("@Yuki", " "))
+    return re.sub(r"\s+", " ", text).strip(" ,，")
 
 
 async def replay(llm, s, *, reply_sec: float, debounce: float):
@@ -265,7 +287,7 @@ async def replay(llm, s, *, reply_sec: float, debounce: float):
         advance(at)
         att = any(sch.attention(ch))
         m = p["msg"]
-        reason = sch.chime_gate(ch, attention=att, llm_busy=False)
+        reason = sch.chime_gate(ch, attention=att, llm_busy=False, named=p["named"])
         if reason:
             st[f"chime_skip_{reason}"] += 1
             return
@@ -300,12 +322,14 @@ async def replay(llm, s, *, reply_sec: float, debounce: float):
         if throttle.is_command(m["content"]):
             st["command_skipped"] += 1
             continue
-        text = strip_call(m["content"], wake)
         uid = m["author"]
-        called = bool(m["mentions_yuki"] or wake.search(m["content"])
-                      or (m.get("reply_to") and m["reply_to"].get("is_yuki")))
+        # D-32（照有開插話的伺服器）：@她、回覆她、直接叫名字才算叫她；其他提到名字的走插話判斷（不吃頻道名額）
+        called = bool(m["mentions_yuki"] or (m.get("reply_to") and m["reply_to"].get("is_yuki"))
+                      or direct_call(m["content"], wake, s.exit_words))
+        mentioned = not called and bool(wake.search(m["content"]))
+        text = strip_call(m["content"], wake, strip_name=not mentioned)
         active, chiming = sch.attention(ch)
-        if (called or active or chiming) and chime.is_shush(m["content"]):
+        if (called or mentioned or active or chiming) and chime.is_shush(m["content"]):
             sch.mute(ch)
             st["shush"] += 1
         line = to_line(m, images=False)
@@ -340,7 +364,7 @@ async def replay(llm, s, *, reply_sec: float, debounce: float):
         st["chime_candidates"] += 1
         if pending is not None:
             st["debounced"] += 1
-        pending = {"fire": t + debounce, "msg": m, "line": line,
+        pending = {"fire": t + debounce, "msg": m, "line": line, "named": mentioned,
                    "recent": list(hist[:-1])[-s.chime_context_lines:]}
         if st["chime_candidates"] % 10 == 0:
             print(f"[flood] {st['human_msgs']}/{len(humans)} 回覆 {st['replies']}", flush=True)
@@ -404,6 +428,9 @@ async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", choices=["chime", "milestone", "flood"])
     ap.add_argument("--tag", default=None, help="只跑 chime 題目裡帶這個 tag 的")
+    ap.add_argument("--cases", default="chime_cases.jsonl", help="chime 題目檔（data/eval_b/ 底下的檔名）")
+    ap.add_argument("--route", action="store_true",
+                    help="D-32 整條路：先看最新一則算不算叫她（算就直接回），不算才走插話判斷")
     ap.add_argument("--reply-sec", type=float, default=10.0, help="洗版重播：一次回覆佔用頻道的秒數")
     ap.add_argument("--no-real-replies", action="store_true", help="洗版重播不實際產生 10 則回覆")
     ap.add_argument("--out", default="eval_chime")
@@ -438,7 +465,7 @@ async def main() -> None:
     try:
         for name in which:
             if name == "chime":
-                result["chime"] = await eval_chime(llm, s, args.tag)
+                result["chime"] = await eval_chime(llm, s, args.tag, cases_file=args.cases, route=args.route)
             elif name == "milestone":
                 result["milestone"] = await eval_milestone(llm, s)
             else:
