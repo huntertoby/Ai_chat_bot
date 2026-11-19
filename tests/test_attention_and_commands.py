@@ -34,7 +34,7 @@ def test_exit_word_must_be_the_whole_sentence():
     assert not is_exit("", words)
 
 
-# ---------- 指令：/忘記 不重述、/記憶 只有本人看得到 ----------
+# ---------- 指令：/記憶 只有本人看得到；/忘記、/白板 已移除 ----------
 class FakeTree:
     def __init__(self):
         self.commands = {}
@@ -109,10 +109,11 @@ def test_memories_keyword_search_uses_the_chat_log(cmd_kit):
     assert all(kw.get("ephemeral") is True for _, kw in it.sent)
 
 
-def test_retired_memory_commands_explain_instead_of_failing(cmd_kit):
-    for it in (call(cmd_kit, "忘記", 記憶id="abcd1234"), call(cmd_kit, "白板")):
-        (content, kw), = it.sent
-        assert "停用" in content and kw.get("ephemeral") is True
+def test_retired_memory_commands_are_gone(cmd_kit):
+    """D-31：舊版記憶的 /忘記、/白板 已移除，不再註冊。"""
+    tree = cmd_kit.bot.tree
+    assert tree.get_command("記憶") is not None
+    assert tree.get_command("忘記") is None and tree.get_command("白板") is None
 
 
 # ---------- 個資掃描：每個要 push 的 commit 都看 ----------

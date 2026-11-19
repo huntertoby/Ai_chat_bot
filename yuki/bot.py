@@ -775,15 +775,6 @@ def register_commands(bot: YukiBot) -> None:
         await send(interaction, f"**{who.display_name} 最近說的話（{len(hits)} 則）**", [h.line() for h in hits],
                    ephemeral=True)
 
-    # 舊版 RAG 的事實記憶和白板：D-04 之後就不再更新、也不再給 Yuki 看，R1 移除了程式。
-    # 指令先留著回一句說明（不默默壞掉），要不要拿掉等使用者決定（R1 報告）。
-    retired = "這個功能已經停用了：Yuki 現在直接查聊天紀錄，不再另外記一條條的記憶或白板。想看她查得到什麼，用 /記憶。"
-
-    @bot.tree.command(name="忘記", description="（已停用）舊版的記憶刪除")
-    @app_commands.describe(記憶id="舊版記憶的 ID")
-    async def forget(interaction: discord.Interaction, 記憶id: str) -> None:
-        await interaction.response.send_message(retired, ephemeral=True)
-
     @bot.tree.command(name="檔案", description="看 Yuki 整理的人物檔案（只有你看得到）")
     @app_commands.describe(對象="要看誰的檔案（不填就是自己）")
     async def profile(interaction: discord.Interaction, 對象: discord.Member | None = None) -> None:
@@ -840,10 +831,6 @@ def register_commands(bot: YukiBot) -> None:
     async def leave_voice(interaction: discord.Interaction) -> None:
         ok = interaction.guild is not None and await bot.end_voice(interaction.guild.id)
         await interaction.response.send_message("好，我先下去了～" if ok else "我本來就不在語音裡啊。")
-
-    @bot.tree.command(name="白板", description="（已停用）舊版的群組近況白板")
-    async def whiteboard(interaction: discord.Interaction) -> None:
-        await interaction.response.send_message(retired, ephemeral=True)
 
     @bot.tree.error
     async def on_app_command_error(interaction: discord.Interaction,
