@@ -23,6 +23,7 @@ import re
 from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime
+from pathlib import Path
 
 from yuki import chime, prompts, throttle
 from yuki.brain import Brain
@@ -36,6 +37,7 @@ from ._eval_b_common import BOT_NAME, EVAL_DIR, RESULT_DIR, load_jsonl, make_llm
 THRESHOLD = 0.7
 SWEEP = (0.5, 0.6, 0.7, 0.8)  # D-22：離線掃門檻（同一次跑記下機率，門檻在程式外套用）
 USE_LOGPROBS = True
+EMOJI_BLOCK = ""  # C1-2：--emoji 指到圖鑑時，插話判斷帶 10 張群組表情清單（跟上線時一樣）
 
 # D-22 規則變體（評估用；只描述標準，不放範例句）。贏了才會寫進 yuki/prompts.py。
 VARIANTS = {
@@ -58,7 +60,8 @@ async def run_decide(llm, case: dict, *, attention: bool | None = None, s=None):
     d = await chime.decide(llm, recent=recent, latest=latest, bot_name=BOT_NAME,
                            images=_images_of(recent + [latest]), attention=attention,
                            context_lines=s.chime_context_lines if s else 15,
-                           max_tokens=s.chime_max_tokens if s else 160, use_logprobs=USE_LOGPROBS)
+                           max_tokens=s.chime_max_tokens if s else 160, use_logprobs=USE_LOGPROBS,
+                           emoji_block=EMOJI_BLOCK)
     return d, attention
 
 
@@ -379,7 +382,7 @@ async def eval_flood(llm, s, args) -> dict:
 
 
 async def main() -> None:
-    global THRESHOLD, USE_LOGPROBS
+    global THRESHOLD, USE_LOGPROBS, EMOJI_BLOCK
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", choices=["chime", "milestone", "flood"])
     ap.add_argument("--tag", default=None, help="只跑 chime 題目裡帶這個 tag 的")
@@ -390,8 +393,14 @@ async def main() -> None:
     ap.add_argument("--no-logprobs", action="store_true", help="不用 logprobs，用模型寫的 participate（舊做法）")
     ap.add_argument("--variant", choices=list(VARIANTS), default="none", help="D-22 規則變體（只影響本次評估）")
     ap.add_argument("--action-first", action="store_true", help="D-22 實驗：schema 把 action 放最前面（機率不受 reason 影響）")
+    ap.add_argument("--emoji", type=Path, default=None, help="C1-2：圖鑑檔（不看 reviewed），帶表情清單跑插話判斷")
+    ap.add_argument("--emoji-n", type=int, default=0, help="表情清單放幾張（預設 emoji_catalog.REACT_N）")
     args = ap.parse_args()
     THRESHOLD, USE_LOGPROBS = args.threshold, not args.no_logprobs
+    if args.emoji:
+        from yuki import emoji_catalog
+        eset = emoji_catalog.load_set(args.emoji, require_reviewed=False)
+        EMOJI_BLOCK = (eset.react_block(args.emoji_n or emoji_catalog.REACT_N) if eset else "")
     if args.action_first:
         order = ["action", "kind", "reason", "participate", "emoji", "need_background"]
         sc = prompts.CHIME_SCHEMA
