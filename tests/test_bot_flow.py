@@ -1,4 +1,5 @@
 """整合測試：假的 Discord 訊息從 on_message 走完整個流程（排程器、Brain、追蹤紀錄都是真的，只換掉 Discord 和 LLM）。"""
+import asyncio
 import json
 
 import pytest
@@ -10,6 +11,8 @@ from yuki.llm import LLMError
 AMING, XIAOJIE, XIAOMEI, AKAI = User(1, "阿明"), User(2, "小傑"), User(3, "小美"), User(4, "阿凱")
 GOOD = {"reason": "好消息", "kind": "congrats", "action": "reply", "participate": 0.9, "emoji": "",
         "need_background": []}
+# D-34：主伺服器注意模式內，模型判斷「在跟她講」
+TALKING = {**GOOD, "kind": "to_me", "reason": "在跟我講"}
 
 
 @pytest.fixture
@@ -121,17 +124,17 @@ def test_busy_channel_new_call_does_not_jump_ahead_of_collected_ones(kits):
 
 # ---------- 注意模式與結束字 ----------
 def test_main_server_follow_ups_during_attention_are_answered_without_calling_her_again(kits):
-    kit = kits(guild=MAIN_GUILD)
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING))
     kit.run(kit.say(AMING, "yuki 今天打什麼"), kit.say(AMING, "那你覺得哪隊會贏"))
     assert len(kit.replies) == 2
-    other = kits(guild=MAIN_GUILD)
+    other = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING))
     other.run(other.say(AMING, "那你覺得哪隊會贏"))  # 沒叫過她：主伺服器不插話
     assert other.replies == []
 
 
 def test_attention_follow_up_does_not_extend_attention_but_a_real_call_does(kits):
     clk = Clock()
-    kit = kits(guild=MAIN_GUILD, clock=clk)
+    kit = kits(guild=MAIN_GUILD, clock=clk, llm=FakeLLM("好喔", TALKING))
     kit.run(kit.say(AMING, "yuki，在嗎"))
     clk.t += 170  # 注意時間 180 秒
     kit.run(kit.say(AMING, "那你覺得呢"))
@@ -157,7 +160,7 @@ def test_exit_word_inside_a_longer_sentence_is_a_normal_message(kits):
 
 
 def test_exit_word_said_to_someone_else_does_not_end_her_attention(kits):
-    kit = kits(guild=MAIN_GUILD)
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING))
     kit.run(kit.say(AMING, "yuki，在嗎"), kit.say(XIAOJIE, "掰掰"), kit.say(AMING, "你還在吧"))
     assert [c for _, c in kit.replies] == ["好喔", "好喔"]  # 跟別人說掰掰（雜訊）不回，也不結束
 
@@ -346,7 +349,7 @@ def test_main_server_attention_waits_for_link_previews(kits, monkeypatch):
     monkeypatch.setattr(vision, "image_urls", lambda m: [])
     quiet = kits(guild=MAIN_GUILD, vision_enabled=True)
     quiet.run(quiet.say(XIAOJIE, "沒人叫她"))  # 沒叫她、也不在注意模式：不等
-    kit = kits(guild=MAIN_GUILD, vision_enabled=True)
+    kit = kits(guild=MAIN_GUILD, vision_enabled=True, llm=FakeLLM("好喔", TALKING))
     kit.run(kit.say(AMING, "yuki 看這個"), kit.say(AMING, "接下來呢"))
     assert waited == ["yuki 看這個", "接下來呢"] and len(kit.replies) == 2
 
@@ -521,3 +524,137 @@ def test_chime_server_reply_to_someone_else_still_goes_to_the_model(kits):
     msg = _reply_to(kit, kit.say(AMING, "我考上研究所了", mentions=[XIAOJIE]), first)  # 回覆時自動 ping
     kit.run(msg)
     assert len(kit.llm.chime_calls) == n + 1
+
+
+# ---------- D-34：主伺服器注意模式先判斷是不是在跟她講 ----------
+def _chime_recs(kit):
+    return [r for r in kit.records() if r["kind"] == "chime"]
+
+
+def test_main_server_attention_replies_only_when_judged_talking_to_her(kits):
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING))
+    follow = kit.say(AMING, "那你覺得哪隊會贏")
+    kit.run(kit.say(AMING, "yuki 今天打什麼"), follow)
+    assert len(kit.llm.chime_calls) == 1 and kit.replies[-1] == (follow.id, "好喔")
+    rec = _chime_recs(kit)[0]
+    final = json.loads(rec["final"])
+    assert rec["trigger"] == "attention_gate" and final["action"] == "reply" and final["replied"] is True
+    assert "提示" in last_user_text(kit.llm.chime_calls[0])  # attention=True
+    reply_recs = [r for r in kit.records() if r["kind"] == "reply"]
+    assert reply_recs[-1]["trigger"] == "attention"
+
+
+@pytest.mark.parametrize("decision", [
+    {**TALKING, "action": "none", "participate": 0.1},
+    {**TALKING, "action": "reply", "participate": 0.3},                 # 低於門檻
+    {**TALKING, "action": "react", "emoji": "😂", "participate": 0.9},  # 主伺服器不按表情
+])
+def test_main_server_attention_stays_quiet_when_judged_not_for_her(kits, decision):
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", decision))
+    msg = kit.say(XIAOJIE, "晚上要不要去吃火鍋")
+    kit.run(kit.say(AMING, "yuki 今天打什麼"), msg)
+    assert len(kit.replies) == 1 and len(kit.llm.chime_calls) == 1 and msg.reactions == []
+    final = json.loads(_chime_recs(kit)[0]["final"])
+    assert final["action"] == "none" and final["replied"] is False
+
+
+def test_main_server_attention_tagging_someone_else_is_not_judged(kits):
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING), members=[NOVA])
+    kit.run(kit.say(AMING, "yuki 今天打什麼"),
+            kit.say(XIAOJIE, f"<@{AKAI.id}> 你上線了沒", mentions=[AKAI]),
+            kit.say(XIAOJIE, f"<@{NOVA.id}> 幫我查天氣", mentions=[NOVA]),
+            kit.say(XIAOJIE, "nova 幫我查天氣"))
+    assert kit.llm.chime_calls == [] and len(kit.replies) == 1
+    finals = [json.loads(r["final"]) for r in _chime_recs(kit)]
+    assert [f["action"] for f in finals] == ["skipped:at_other", "skipped:at_other", "skipped:other_bot"]
+    assert all(r["trigger"] == "attention_gate" for r in _chime_recs(kit))
+
+
+def test_main_server_attention_tag_plus_her_name_is_a_call(kits):
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING))
+    kit.run(kit.say(AMING, "yuki 今天打什麼"), kit.say(XIAOJIE, f"<@{AKAI.id}> 你問 yuki 啦", mentions=[AKAI]))
+    assert len(kit.replies) == 2 and kit.llm.chime_calls == []  # 主伺服器有名字就算叫她（D-32 照舊）
+
+
+def test_main_server_outside_attention_is_not_judged(kits):
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING))
+    kit.run(kit.say(AMING, "那你覺得哪隊會贏"))
+    assert kit.llm.chime_calls == [] and kit.replies == [] and _chime_recs(kit) == []
+
+
+def test_main_server_direct_call_during_attention_skips_the_judgement(kits):
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", {**TALKING, "action": "none", "participate": 0.0}))
+    kit.run(kit.say(AMING, "yuki 今天打什麼"), kit.say(XIAOJIE, "yuki，你也來"))
+    assert len(kit.replies) == 2 and kit.llm.chime_calls == []
+
+
+def test_main_server_attention_is_not_limited_by_chime_quotas(kits):
+    clk = Clock()
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("恭喜", GOOD), clock=clk)  # congrats：插話時同人同類一天一次
+    kit.run(kit.say(AMING, "yuki，在嗎"))
+    for t in ("我考上研究所了", "我也找到工作了", "我還中了發票"):
+        clk.t += 10
+        kit.run(kit.say(AMING, t))
+    assert len(kit.replies) == 4
+
+
+def test_main_server_attention_waits_while_lm_studio_is_busy(kits):
+    clk = Clock()
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING), clock=clk)
+    kit.run(kit.say(AMING, "yuki，在嗎"))
+    sleep = kit.bot.replies._sleep
+    naps = []
+
+    async def busy_for_a_while(sec):
+        naps.append(sec)
+        if len(naps) >= 6:
+            kit.bot._replying = 0  # 上一則回完了
+        await sleep(sec)
+
+    kit.bot.replies._sleep = busy_for_a_while
+    kit.bot._replying = 1  # 她正在回別的（LM Studio 忙）
+    follow = kit.say(AMING, "那你覺得呢")
+    kit.run(follow)
+    assert len(kit.llm.chime_calls) == 1 and kit.replies[-1] == (follow.id, "好喔")
+    assert json.loads(_chime_recs(kit)[-1]["final"])["waited_llm"] is True
+
+
+def test_main_server_attention_gives_up_after_waiting_too_long(kits):
+    clk = Clock()
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING), clock=clk)
+    kit.run(kit.say(AMING, "yuki，在嗎"))
+    kit.bot._replying = 1  # 一直忙
+    t0 = clk.t
+    kit.run(kit.say(AMING, "那你覺得呢"))
+    final = json.loads(_chime_recs(kit)[-1]["final"])
+    assert final["action"] == "skipped:llm_busy_timeout" and kit.llm.chime_calls == []
+    assert clk.t - t0 >= botmod.ATTENTION_GATE_WAIT_SEC and len(kit.replies) == 1
+    kit.bot._replying = 0
+
+
+def test_main_server_attention_judges_only_the_newest_line_after_waiting(kits):
+    clk = Clock()
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING), clock=clk)
+    kit.run(kit.say(AMING, "yuki，在嗎"))
+    kit.bot._replying = 1
+    older, newer = kit.say(AMING, "那你覺得呢"), kit.say(XIAOJIE, "我也想知道")
+
+    async def scenario():
+        await kit.bot.on_message(older)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)            # older 開始判斷、在等 LLM
+        await kit.bot.on_message(newer)   # 等的時候又有人講
+        kit.bot._replying = 0
+    kit.run(scenario())
+    assert len(kit.llm.chime_calls) == 1 and "我也想知道" in last_user_text(kit.llm.chime_calls[0])
+    assert kit.replies[-1][0] == newer.id
+    actions = [json.loads(r["final"])["action"] for r in _chime_recs(kit)]
+    assert "skipped:superseded" in actions
+
+
+def test_main_server_attention_respects_mute(kits):
+    kit = kits(guild=MAIN_GUILD, llm=FakeLLM("好喔", TALKING))
+    kit.run(kit.say(AMING, "yuki，在嗎"))
+    kit.bot.replies.mute(5)
+    kit.run(kit.say(AMING, "那你覺得呢"))
+    assert len(kit.replies) == 1 and json.loads(_chime_recs(kit)[-1]["final"])["action"] == "skipped:muted"

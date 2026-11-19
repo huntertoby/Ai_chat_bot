@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 ARCHIVE_PATH = ROOT / "data" / "archive.db"
 NO_PING = discord.AllowedMentions.none()  # LLM 輸出 @everyone 也不會真的 tag 到人
+ATTENTION_GATE_WAIT_SEC = 20.0  # D-34：注意模式判斷時 LLM 忙，最多等這麼久（超過才放棄）
 
 
 def split_message(text: str, limit: int = 1900) -> list[str]:
@@ -91,6 +92,7 @@ class YukiBot(commands.Bot):
         self.brain = Brain.build(settings)
         self._members: dict[int, list[Person]] = {}
         self._other_bots: dict[int, re.Pattern | None] = {}  # D-34：伺服器裡其他 bot 的名字（快取）
+        self._attn_latest: dict[int, int] = {}  # D-34：每頻道最新一則等著判斷的注意模式訊息 ID
         self._wake = wake_pattern(settings.wake_words)
         self._synced = False
         # 每頻道的回覆排程：節流（B3）、熱鬧模式、排隊合併、插話去抖動與硬限制（B2）、注意時間
@@ -577,14 +579,20 @@ class YukiBot(commands.Bot):
 
         if called:
             self.replies.cancel_debounce(cid)  # 有人叫她，不用再判斷要不要插話
+            self._attn_latest.pop(cid, None)  # 還在等 LLM 的注意模式判斷也不用了
             await self._on_called(message, author, text, mentions)
             return
         if message.guild is not None and not self.chime_allowed(message.guild):
-            # 還沒開插話的伺服器（預設＝測試伺服器以外，例如主伺服器）：注意模式內接著回，
-            # 但跟被叫一樣走熱鬧模式（頻道很吵時收集起來合併回），而且這種回覆不會再延長注意時間
+            # 還沒開插話的伺服器（預設＝測試伺服器以外，例如主伺服器）：注意模式內先判斷是不是在跟她講（D-34），
+            # 是才回；回的時候跟被叫一樣走熱鬧模式（頻道很吵時收集起來合併回），而且不會再延長注意時間。
+            # 沒人叫她（不在注意模式）照舊不主動插話
             if (active and line is not None and not throttle.is_noise_text(text, s.noise_max_chars)
                     and not self.replies.throttle.tag_cooling(author.id)):  # 洗版冷卻中的人，注意模式也不回
-                await self._on_called(message, author, text, mentions, count_tag=False, trigger="attention")
+                if why := self.addressed_elsewhere(message):  # @別人、叫別的 bot：不呼叫模型
+                    await self._trace_blocked(message, "attention_gate", why, True)
+                    return
+                self._attn_latest[cid] = message.id
+                self.replies.schedule_chime(cid, lambda: self._attention_gate(message, line, author, text, mentions))
             return
         # 沒被叫到：先過雜訊過濾，再排進插話判斷（注意模式只是多一個提示，不是必回）
         if (line is None or not self.replies.limits.enabled or message.guild is None
@@ -697,6 +705,76 @@ class YukiBot(commands.Bot):
     # ---------- 沒被叫到：插話判斷（B2）----------
     def _llm_busy(self) -> bool:
         return self._replying > 0 or chime.llm_is_busy(self.brain.llm)
+
+    def _attention_threshold(self) -> float:
+        """注意模式判斷的門檻：正式插話門檻（CHIME_IN 等級或 CHIME_THRESHOLD）；CHIME_IN=0 時用等級 1 的門檻。"""
+        lim = self.replies.limits
+        if lim.enabled:
+            return lim.threshold
+        return lim._threshold if lim._threshold is not None else chime.LEVELS[1][0]
+
+    async def _attention_gate(self, message: discord.Message, line: ChatLine, author: Person, text: str,
+                              mentions: list[Person]) -> None:
+        """D-34：沒開插話的伺服器（主伺服器），注意模式內沒叫她的訊息：先用插話判斷（attention=True）看是不是在跟她講，
+        要回（should_reply）才照注意模式接話回（熱鬧模式、排隊合併、不延長注意時間）。react／none 都不動。
+        不吃插話的次數限制（頻道名額、同人同類一天一次）；閉嘴照舊。LLM 忙就等（最多 ATTENTION_GATE_WAIT_SEC 秒），
+        等的期間有更新的一則就讓新的判斷。每次寫一筆 chime 追蹤（trigger＝attention_gate）。"""
+        cid = message.channel.id
+        info: dict = {"attention": True}
+        admitted = None
+        tr = trace.start("chime", guild=message.guild.id if message.guild else "", channel=cid,
+                         trigger="attention_gate", user_ids=[author.id], keep_prompts=False)
+        self._hide_optouts(tr, str(cid), self._replied_person(message))
+        async with tr:
+            def skip(reason: str) -> None:
+                tr.outcome = "skipped"
+                info["action"] = f"skipped:{reason}"
+
+            deadline = self.replies._clock() + ATTENTION_GATE_WAIT_SEC
+            d = images = None
+            waited = False
+            while True:
+                if self._attn_latest.get(cid) != message.id:
+                    skip("superseded")  # 等的時候有人接著講（或叫了她）：判斷最新那則
+                    break
+                if self.replies.limits.is_muted(cid):
+                    skip("muted")
+                    break
+                if not self.replies.attention(cid)[0]:
+                    skip("attention_ended")
+                    break
+                if self._llm_busy():
+                    waited = True
+                    left = deadline - self.replies._clock()
+                    if left <= 0 or not await self.replies.wait_until(lambda: not self._llm_busy(), left):
+                        skip("llm_busy_timeout")
+                        log.info("注意模式判斷：LLM 一直在忙（超過 %.0f 秒），放棄這則", ATTENTION_GATE_WAIT_SEC)
+                        break
+                    continue  # 等完再檢查一次有沒有更新的一則、注意時間還在不在
+                d, images, _ = await self._decide(message, line, True)
+                if d is not None:
+                    break
+                waited = True  # 準備資料的時候 LLM 被佔住了：回去等
+            if waited:
+                info["waited_llm"] = True
+            if d is not None:
+                th = self._attention_threshold()
+                tr.lat("decide", d.ms)
+                info.update(decision=d.to_dict(), threshold=th, prob=round(d.participate, 3), images=len(images))
+                if d.error:
+                    tr.degrade("chime_failed")
+                    info["action"] = "none"
+                elif d.should_reply(th):
+                    info["action"] = "reply"
+                    admitted = self.replies.admit_call(cid, author.id, count_tag=False)
+                else:
+                    info["action"] = "none"  # react 也不按（主伺服器不開按表情）
+            info["replied"] = admitted is not None
+            if self._attn_latest.get(cid) == message.id:
+                self._attn_latest.pop(cid, None)
+            tr.final = json.dumps(info, ensure_ascii=False)
+        if admitted is not None:
+            await self.replies.call(cid, Turn(message, author, text, mentions, trigger="attention"), admitted)
 
     async def _chime(self, message: discord.Message, line: ChatLine, attention: bool, *,
                      named: bool = False) -> Turn | None:

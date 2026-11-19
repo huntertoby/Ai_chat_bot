@@ -229,6 +229,15 @@ class ReplyScheduler:
         except Exception:
             log.exception("插話判斷失敗")
 
+    async def wait_until(self, ready: Callable[[], bool], timeout: float, step: float = 0.5) -> bool:
+        """等到 ready() 為真（D-34：注意模式的判斷遇到 LLM 忙就等）。超過 timeout 秒還沒好回 False。"""
+        deadline = self._clock() + timeout
+        while not ready():
+            if self._clock() >= deadline:
+                return False
+            await self._sleep(step)
+        return True
+
     def chime_gate(self, cid: Any, *, attention: bool, llm_busy: bool, named: bool = False) -> str | None:
         """呼叫模型判斷之前的限制。回傳不判斷的原因，None＝可以判斷。
         named（D-32）：提到她名字的訊息不吃頻道名額（閉嘴、忙碌、冷卻、LLM 忙照舊）。"""
