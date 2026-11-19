@@ -220,3 +220,17 @@ def test_burst_not_triggered_by_slow_calls():
     th, clock = _burst_throttle()
     assert all(_call_round_robin(th, clock, 10, step=20))  # 60 秒內不到 5 次
     assert not th.in_burst("c")
+
+
+def test_flood_needs_almost_nothing_left_besides_the_repeats():
+    from yuki.throttle import is_flood
+    assert not is_flood("我考上了！！！！！！！！！！")
+    assert not is_flood("哈哈哈哈哈哈哈哈哈哈")
+    assert not is_flood("10000000000")
+    assert not is_flood("----------")
+    assert not is_flood("wwwwwwwwwwwww")
+    assert not is_flood("今天好開心" + "哈" * 20 + "笑死")
+    assert is_flood("a" * 10)
+    assert is_flood("阿" * 15)
+    assert is_flood("嗚" * 12 + "好")  # 剩 1 字
+    assert not is_flood("嗚" * 12 + "我今天真的很難過")  # 還有內容
