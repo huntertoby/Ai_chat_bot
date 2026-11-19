@@ -6,6 +6,8 @@ import logging
 import re
 from collections import defaultdict, deque
 from datetime import date, datetime
+from typing import Callable
+from urllib.parse import unquote_plus
 
 import httpx
 
@@ -28,7 +30,8 @@ _TO_TW = None
 _NAME_PREFIX = re.compile(r"^\s*(?:\[[^\]\n「]{1,32}回覆[^\n]{0,200}?」\]|\[(?!貼圖)[^\]\n]{1,32}\])\s*")
 
 
-MEMBER_SEARCH_BLOCKED = "（不能拿群組成員的名字上網搜尋：成員的事只看記憶和人物檔案。直接回答就好。）"
+# D-27：成員的名字可以上網查；只有打過 /不要記我 的人，名字不送到外面（web_search 的關鍵字、open_url 的網址都算）
+OPTOUT_SEARCH_BLOCKED = "（這次要查的內容有說過「不要記我」的人的名字，不能送到網路上。拿掉那個名字再查，或直接回答。）"
 
 
 def _is_alnum(ch: str) -> bool:
@@ -36,7 +39,7 @@ def _is_alnum(ch: str) -> bool:
 
 
 def names_in(query: str, names) -> list[str]:
-    """搜尋字串裡出現的成員名字（2 個字以上才算，避免單字誤判）。
+    """字串裡出現的名字（2 個字以上才算，避免單字誤判）。
     名字全是英文字母／數字：要整個詞相符（前後不是英文字母或數字），不分大小寫；
     其他（中文、或中英夾雜）照子字串比對，寧可多擋。"""
     q = query.lower()
@@ -51,6 +54,25 @@ def names_in(query: str, names) -> list[str]:
         elif low in q:
             hit.add(n)
     return sorted(hit)
+
+
+def _decode_url(url: str) -> str:
+    """網址解碼到不再變（%E9%98%BF、+ 當空白、被編碼兩次的都解開），名字才比對得到。"""
+    for _ in range(3):
+        nxt = unquote_plus(url)
+        if nxt == url:
+            break
+        url = nxt
+    return url
+
+
+def web_names_hit(tool: str, args: dict, names) -> list[str]:
+    """這次上網工具呼叫會送出去的內容裡，出現了哪些不准送出的名字。其他工具一律回 []。"""
+    if tool == "web_search":
+        return names_in(str(args.get("query", "")), names)
+    if tool == "open_url":
+        return names_in(_decode_url(str(args.get("url", ""))), names)
+    return []
 
 
 def to_traditional(text: str) -> str:
@@ -126,6 +148,9 @@ class Brain:
         self._tasks: set[asyncio.Task] = set()
         self._img_http = httpx.AsyncClient(follow_redirects=False)
         self.archive_db = None  # bot 設定：封存區（agentic 檢索用）
+        # bot 設定：打過 /不要記我 的人（user ID）、他們在各伺服器的名字。不設就當沒有人退出
+        self.opted_out: Callable[[], set[str]] = set
+        self.optout_names: Callable[[], set[str]] = set
 
     @property
     def agentic(self) -> bool:
@@ -243,15 +268,10 @@ class Brain:
                                       emoji=emoji)
         messages = [{"role": "system", "content": system}] + vision.attach(to_messages(lines), images)
         if self.web:
-            # 成員的名字不准拿去搜尋：會把朋友的學校、工作之類的個資送到外部搜尋引擎
-            names = {p.name for p in [author, *mentions, *members]} - {self.settings.bot_name}
+            blocked = self.blocked_names([author, *mentions, *members])
 
             async def call_tool(name: str, args: dict) -> str:
-                hit = names_in(str(args.get("query", "")), names) if name == "web_search" else []
-                if hit:
-                    log.warning("擋下搜尋成員：%s（%s）", args.get("query"), hit)
-                    return MEMBER_SEARCH_BLOCKED
-                return await self.web.call(name, args)
+                return await self.web_call(name, args, blocked)
 
             text = await self.llm.chat_tools(messages, TOOL_SPECS, call_tool,
                                              max_rounds=self.settings.web_max_rounds)
@@ -260,6 +280,19 @@ class Brain:
         # 模型有時學對話紀錄的格式，在開頭加上 [名字]
         text = _NAME_PREFIX.sub("", text)
         return to_traditional(text)
+
+    def blocked_names(self, people) -> set[str]:
+        """不准送上網的名字：打過 /不要記我 的人（bot 給的全部伺服器的名字，加上這次對話名單裡同一個人的名字）。"""
+        out = set(self.optout_names())
+        ids = self.opted_out()
+        out |= {p.name for p in people if p.id in ids}
+        return out - {self.settings.bot_name}
+
+    async def web_call(self, name: str, args: dict, blocked: set[str]) -> str:
+        if hit := web_names_hit(name, args, blocked):
+            log.warning("擋下上網：%s 含有退出的人的名字（%d 個）", name, len(hit))
+            return OPTOUT_SEARCH_BLOCKED
+        return await self.web.call(name, args)
 
     # ---------- Agentic 檢索（開發規格 6.4）----------
     def profile_text(self, guild_id: str, user_id: str) -> str:
@@ -305,19 +338,15 @@ class Brain:
         if self.archive_db is not None:
             tools = self.archive_tools(guild_id, archive_guild, everyone)
             specs += archive_tools.TOOL_SPECS
-        names = {p.name for p in everyone} - {s.bot_name}
+        blocked = self.blocked_names(everyone) if self.web else set()
         if self.web:
             specs += TOOL_SPECS
 
         async def call_tool(name: str, args: dict) -> str:
             if name in archive_tools.NAMES and tools is not None:
                 return await tools.call(name, args)
-            hit = names_in(str(args.get("query", "")), names) if name == "web_search" else []
-            if hit:
-                log.warning("擋下搜尋成員：%s（%s）", args.get("query"), hit)
-                return MEMBER_SEARCH_BLOCKED
             if self.web:
-                return await self.web.call(name, args)
+                return await self.web_call(name, args, blocked)
             return f"（沒有 {name} 這個工具）"
 
         rounds = s.voice_max_rounds if spoken else max(s.web_max_rounds, 3)

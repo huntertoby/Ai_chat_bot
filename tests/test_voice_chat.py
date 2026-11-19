@@ -158,7 +158,7 @@ def test_owner_rules_only_when_owner_set():
     assert "關於" not in prompts.reply_system("Yuki", [], []).split("規則：")[0]
 
 
-def test_member_names_in_search_query():
+def test_names_in_finds_names_in_text():
     from yuki.brain import names_in
     names = {"阿明", "hunterchiao", "A"}
     assert names_in("阿明 某大學 資工系", names) == ["阿明"]
@@ -169,7 +169,7 @@ def test_member_names_in_search_query():
 
 def test_voice_reply_rules_are_short():
     p = prompts.reply_system("Yuki", [], [], spoken=True, web=True)
-    assert "30 個字以內" in p and "不要拿群組成員的名字" in p
+    assert "30 個字以內" in p and "查完只講結論" in p
 
 
 # ---------- A3 修正：切句合併、ASR 名字、TTS 順序 ----------

@@ -9,7 +9,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from yuki import chime, prompts, trace
-from yuki.brain import MEMBER_SEARCH_BLOCKED, Brain, to_messages
+from yuki.brain import Brain, to_messages
 from yuki.chime import ChimeLimits, Decision, decide, parse_decision
 from yuki.config import Settings
 from yuki.llm import LLMError
@@ -297,7 +297,9 @@ def test_background_rules_only_when_tools_exist():
     assert "先查再接話" not in prompts.reply_system("Yuki", [], None)
     for kw in ({"web": True}, {"archive": True}):
         sys = prompts.reply_system("Yuki", [], None, **kw)
-        assert "先查再接話" in sys and "絕對不上網" in sys and "帶年份" in sys
+        assert "先查再接話" in sys and "帶年份" in sys
+        # D-27：成員的事先翻聊天紀錄，但不再禁止上網
+        assert "先查群組聊天紀錄" in sys and "也可以上網" in sys and "絕對不上網" not in sys
 
 
 def test_background_line_goes_into_system_only_with_items_and_tools():
@@ -362,7 +364,8 @@ def test_need_background_reaches_the_agentic_system_prompt():
     assert "回覆前先查" not in llm2.system
 
 
-def test_member_names_never_reach_web_search_in_agentic_flow():
+def test_member_names_can_be_searched_on_the_web():
+    """D-27：可以拿成員的名字上網查（取消舊規則）。"""
     llm = ToolLLM("小傑 就讀 大學")
     brain = make_brain(llm)
     called = []
@@ -374,14 +377,7 @@ def test_member_names_never_reach_web_search_in_agentic_flow():
     brain.web.call = fake_call
     brain.observe("c", ChatLine(AMING, "小傑最近怎樣"))
     run(brain.reply("g", "c", AMING, "小傑最近怎樣", members=[AMING, XIAOJIE]))
-    assert called == [] and llm.tool_results == [MEMBER_SEARCH_BLOCKED]
-    # 公眾人物（不在成員名單）照常上網
-    llm2 = ToolLLM("某實況主 2026 新聞")
-    brain2 = make_brain(llm2)
-    brain2.web.call = fake_call
-    brain2.observe("c", ChatLine(AMING, "某實況主怎麼了"))
-    run(brain2.reply("g", "c", AMING, "某實況主怎麼了", members=[AMING, XIAOJIE]))
-    assert called == [{"query": "某實況主 2026 新聞"}]
+    assert called == [{"query": "小傑 就讀 大學"}] and llm.tool_results == ["網路結果"]
 
 
 # ---------- bot：插話流程（用假物件，不連 Discord）----------

@@ -131,6 +131,8 @@ class YukiBot(commands.Bot):
                         opted_out=self._trace_opted_out)
         self.voice = VoicePresence(self.archive.db)
         self.brain.archive_db = self.archive.db  # agentic 檢索（開發規格 6.4）
+        self.brain.opted_out = self._all_optouts
+        self.brain.optout_names = self._optout_names
         self._catchup_tasks: set = set()
         # 閒置判斷：最後一則真人訊息的時間、正在回覆的數量、是否正在補抓
         self._last_activity = time.monotonic()
@@ -170,6 +172,21 @@ class YukiBot(commands.Bot):
         row = self.archive.db.execute(f"SELECT 1 FROM optout WHERE user_id IN ({marks}) LIMIT 1",
                                       list(user_ids)).fetchone()
         return row is not None
+
+    def _all_optouts(self) -> set[str]:
+        """打過 /不要記我 的人（不分在哪個伺服器打的）。"""
+        return {r[0] for r in self.archive.db.execute("SELECT DISTINCT user_id FROM optout")}
+
+    def _optout_names(self) -> set[str]:
+        """退出的人在 Yuki 所在各伺服器的名字（暱稱、帳號名、全域名稱），上網工具不准送出這些字。"""
+        names: set[str] = set()
+        for uid in self._all_optouts():
+            if not uid.isdigit():
+                continue
+            users = [g.get_member(int(uid)) for g in self.guilds] + [self.get_user(int(uid))]
+            for u in filter(None, users):
+                names |= {n for n in (getattr(u, "display_name", None), u.name, getattr(u, "global_name", None)) if n}
+        return names
 
     async def _dm_owner(self, user_id: str, text: str) -> None:
         user = await self.fetch_user(int(user_id))
