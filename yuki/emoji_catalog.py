@@ -339,12 +339,28 @@ class EmojiSet:
         return report
 
 
-def process_reply(text: str, eset: "EmojiSet | None") -> tuple[str, str | None]:
+class EmojiPacing:
+    """「不要每句都用」的程式端保證：同一個頻道用過表情或貼圖之後，接下來 `skip` 則回覆不用
+    （那幾則的 prompt 也不放清單）。模型自己的傾向再高，最終比例也不會超過 1/(skip+1)。"""
+
+    def __init__(self, skip: int = 2):
+        self.skip = skip
+        self._since: dict = {}
+
+    def allow(self, channel) -> bool:
+        return self._since.get(channel, self.skip) >= self.skip
+
+    def record(self, channel, used: bool) -> None:
+        self._since[channel] = 0 if used else self._since.get(channel, self.skip) + 1
+
+
+def process_reply(text: str, eset: "EmojiSet | None", *, allow: bool = True) -> tuple[str, str | None]:
     """回覆後處理：`:名稱:`→`<:名稱:ID>`；不在圖鑑裡的 `:xxx:`、`[貼圖:xxx]` 刪掉；
     一則最多 1 個表情或 1 張貼圖（照出現順序，第一個有效的留下）。回傳 (文字, 貼圖 ID 或 None)。
-    eset=None（沒有圖鑑、沒 reviewed、或這個伺服器不開放）：`:xxx:`、`[貼圖:…]` 一律清掉，其他不動。"""
+    eset=None（沒有圖鑑、沒 reviewed、或這個伺服器不開放）：`:xxx:`、`[貼圖:…]` 一律清掉，其他不動。
+    allow=False（這則不該用，見 EmojiPacing）：圖鑑裡的也一律刪掉。"""
     sticker: str | None = None
-    used = False
+    used = not allow  # 不允許＝當作已經用掉名額，後面的有效表情全部刪
     changed = False
 
     def sub(m: re.Match) -> str:

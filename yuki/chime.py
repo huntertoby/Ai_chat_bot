@@ -151,7 +151,8 @@ def build_messages(recent: list[ChatLine], latest: ChatLine, bot_name: str, imag
     emoji_block：這個伺服器可以按的群組表情（一行一張，C1-2）；空字串＝不放（沒有圖鑑的伺服器）。"""
     shown = [_line_text(l, bot_name) for l in recent[-context_lines:]]
     images = list(images)
-    text = prompts.chime_user(shown, _line_text(latest, bot_name), attention=attention, images=len(images))
+    text = prompts.chime_user(shown, _line_text(latest, bot_name), attention=attention, images=len(images),
+                              react_hint=bool(emoji_block))
     content: Any = text
     if images:
         content = [{"type": "text", "text": text}] + [{"type": "image_url", "image_url": {"url": u}} for u in images]

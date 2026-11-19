@@ -91,7 +91,7 @@ from yuki import bot as botmod  # noqa: E402
 from yuki.bot import Turn  # noqa: E402
 
 
-def _respond_with(reply_text, eset):
+def _respond_with(reply_text, eset, pacing=None):
     class Typing:
         async def __aenter__(self):
             return self
@@ -119,6 +119,7 @@ def _respond_with(reply_text, eset):
     me.archive_guild = lambda g: ""
     me.user = NS(id=99, name="Yuki", display_name="Yuki")
     me.emoji_set = lambda g: eset
+    me.emoji_pacing = pacing or cat.EmojiPacing()
     me.brain.reply = reply_fn
     me.brain.observe = lambda k, l: True
     me.brain.buffer = lambda *a, **k: None
@@ -180,3 +181,32 @@ def test_bot_chime_react_with_catalog_alias_and_restriction(tmp_path):
     got, _ = run_with("🎉")                        # unicode 照舊
     assert got == ["🎉"]
     assert records(tmp_path)
+
+
+def test_pacing_skips_replies_after_use():
+    p = cat.EmojiPacing(skip=2)
+    seq = []
+    for used_if_allowed in [True] * 8:
+        ok = p.allow("c")
+        seq.append(ok)
+        p.record("c", ok and used_if_allowed)
+    assert seq == [True, False, False, True, False, False, True, False]
+    assert p.allow("other")                                    # 別的頻道各算各的
+
+
+def test_process_allow_false_strips_everything():
+    s = cat.EmojiSet("1", ITEMS)
+    assert s.process("好 :happy: [貼圖:wave]") == ("好 <:happy:11>", None)
+    assert cat.process_reply("好 :happy: [貼圖:wave]", s, allow=False) == ("好", None)
+
+
+def test_respond_pacing_next_replies_have_no_list_and_no_emoji():
+    eset = cat.EmojiSet("7", ITEMS)
+    pacing = cat.EmojiPacing(skip=2)
+    ok, sent, seen = _respond_with("好喔 :happy:", eset, pacing)
+    assert seen["emoji"] and "<:happy:11>" in sent[0][0]
+    for _ in range(2):  # 接下來兩則：不放清單，模型就算寫了也刪掉
+        ok, sent, seen = _respond_with("好喔 :happy:", eset, pacing)
+        assert seen["emoji"] == "" and sent[0][0] == "好喔"
+    ok, sent, seen = _respond_with("好喔 :happy:", eset, pacing)
+    assert seen["emoji"] and "<:happy:11>" in sent[0][0]

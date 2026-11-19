@@ -129,7 +129,8 @@ BACKGROUND_RULES = """聊到不熟的人事物：
 
 EMOJI_RULES = """群組自己的表情與貼圖：
 - 想用表情時，在句子裡寫 :名稱:（前後各一個冒號，名稱照下面的清單，不要自己編）；每行後面是那張適合的情況。
-- 偶爾用就好，大多數回覆不用；只有情境真的對得上才用，不要為了用而用。一則最多一個表情或一張貼圖。
+- 絕大多數的回覆（九成以上）不要用任何表情。只有語氣上真的有強烈情緒、而且下面剛好有一張完全對得上，才用。
+- 一則最多一個表情或一張貼圖。
 - 想用貼圖時，在整則回覆的最後寫 [貼圖:名稱]（只能用標著貼圖的）；貼圖和表情合計一則最多一個。
 {items}"""
 
@@ -224,8 +225,12 @@ CHIME_SYSTEM = """[你是誰]
 對話紀錄的格式：[名字] 內容；有回覆關係時是 [名字 回覆 某人「被回覆的那句」] 內容，「回覆你」就是在回你說過的話；你自己說過的話標成 [{bot_name}（你）]。"""
 
 CHIME_EMOJI = """[可以按的群組表情]
-action 是 react 時，emoji 欄填下面其中一個名稱（只寫名稱，不要冒號），每行後面是適合的情況；情境都對不上就選 none，不要硬按。
+action=react 的意思是安靜地按一個表情，不打字。最新訊息好笑、傻眼、可以吐槽、值得附和，但沒有需要你回答或補充的事時，選 react：emoji 填下面最貼切的名稱（不要冒號）。沒有貼切的、或訊息本身很無聊才選 none。
 {items}"""
+
+# 只放在 system 裡，模型幾乎永遠選 none（20 則值得理一下的訊息 0 則 react）；放在 user 訊息最後才有用
+CHIME_EMOJI_HINT = ("（提示：這則如果讓你想笑、想吐槽、想附和，或是別人分享了什麼，但沒什麼非講不可的話，"
+                    "action 選 react 並從群組表情挑一個。只有訊息平淡到完全沒有反應可以給，才選 none。）")
 
 CHIME_ATTENTION = "（提示：你剛剛才講過話，這則比較可能是在跟你講話；看前後文判斷是不是在接你的話。）"
 
@@ -244,13 +249,16 @@ CHIME_SCHEMA = {
 }
 
 
-def chime_user(recent: list[str], latest: str, *, attention: bool = False, images: int = 0) -> str:
+def chime_user(recent: list[str], latest: str, *, attention: bool = False, images: int = 0,
+               react_hint: bool = False) -> str:
     nl = chr(10)
     parts = ["[最近的對話]" + nl + (nl.join(recent) if recent else "（沒有）"), "[最新訊息]" + nl + latest]
     if images:
         parts.append(f"（最近的訊息附了 {images} 張圖，縮小過，依貼的順序附在後面。）")
     if attention:
         parts.append(CHIME_ATTENTION)
+    if react_hint:
+        parts.append(CHIME_EMOJI_HINT)
     return (nl + nl).join(parts)
 
 

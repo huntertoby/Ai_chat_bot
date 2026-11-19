@@ -105,6 +105,7 @@ class YukiBot(commands.Bot):
         logging.getLogger().addHandler(alert.AlertLogHandler(self.alerter))
         self._health_task: asyncio.Task | None = None
         self.emoji_sets = emoji_catalog.load_all()  # 只有 reviewed 的圖鑑（C1-2）
+        self.emoji_pacing = emoji_catalog.EmojiPacing()
         self.brain = Brain.build(settings)
         self.active_until: dict[int, float] = {}   # 被叫到之後的注意模式
         self.chime_until: dict[int, float] = {}    # 她自己插話之後的注意時間（只影響閉嘴判斷和插話的 attention 提示）
@@ -634,6 +635,7 @@ class YukiBot(commands.Bot):
                          trigger=turn.trigger, user_ids=[author.id, *(m.id for m in mentions)])
         self._hide_optouts(tr, channel_key, self._replied_person(message))
         eset = self.emoji_set(message.guild)
+        emoji_ok = eset is not None and self.emoji_pacing.allow(cid)  # 剛用過就這則不放清單
         try:
             async with tr:
                 async with message.channel.typing():
@@ -644,7 +646,7 @@ class YukiBot(commands.Bot):
                                                    owner=self.owner_name(message.guild),
                                                    archive_guild=self.archive_guild(message.guild),
                                                    background=turn.background, chimed=turn.chimed,
-                                                   emoji=eset.prompt_block() if eset else "")
+                                                   emoji=eset.prompt_block() if emoji_ok else "")
                 tr.final = reply
         except LLMError as e:
             # 用 warning：ERROR 會被 AlertLogHandler 當成另一種錯誤再通知一次
@@ -657,7 +659,9 @@ class YukiBot(commands.Bot):
         finally:
             self._replying -= 1
         # 群組表情：`:名稱:` 換成 <:名稱:ID>、壞名稱刪掉、一則最多一個；貼圖另外附（沒有圖鑑也會把 :xxx: 清掉）
-        reply, sticker = emoji_catalog.process_reply(reply, eset)
+        reply, sticker = emoji_catalog.process_reply(reply, eset, allow=emoji_ok)
+        if eset is not None:
+            self.emoji_pacing.record(cid, bool(sticker) or bool(emoji_catalog.CUSTOM_EMOJI.search(reply)))
         if not reply and not sticker:
             if turn.chimed:
                 return False
