@@ -389,18 +389,6 @@ def traces(tmp_path):
 # 插話判斷整條流程（去抖動、限制、按表情、追蹤紀錄）在 test_bot_flow.py（整合）和 test_scheduler.py
 
 
-def test_chime_only_in_test_guilds_by_default():
-    """插話判斷預設只在測試伺服器開；CHIME_GUILD_IDS 有填就照填的。"""
-    from types import SimpleNamespace as NS
-    from yuki.bot import YukiBot
-    g_test, g_main = NS(id=111), NS(id=222)
-    fake = NS(settings=NS(chime_guild_ids=[], test_guild_ids=["111"]))
-    assert YukiBot.chime_allowed(fake, g_test) and not YukiBot.chime_allowed(fake, g_main)
-    assert not YukiBot.chime_allowed(fake, None)
-    fake.settings.chime_guild_ids = ["222"]
-    assert YukiBot.chime_allowed(fake, g_main) and not YukiBot.chime_allowed(fake, g_test)
-
-
 # ---------- D-22：開口機率從 logprobs 算 ----------
 def _lp_content(open_lp, closed=(), *, text_before='{"reason": "x", "kind": "other", "action": "', value="reply"):
     """做出 LM Studio 風格的 logprobs.content：前面的文字拆成幾個 token，最後是 action 的值，附 top_logprobs。"""

@@ -372,3 +372,50 @@ def test_optout_off_by_default_no_command_and_nobody_is_blocked(kits):
 def test_optout_enabled_registers_the_command(kits):
     kit = kits(optout_enabled=True)
     assert kit.bot.tree.get_command("不要記我") is not None
+
+
+# ---------- 哪些伺服器開什麼 ----------
+def test_chime_runs_only_in_test_servers_unless_listed(kits):
+    main = kits(llm=FakeLLM("恭喜", GOOD), guild=MAIN_GUILD)
+    main.run(main.say(AMING, "我考上研究所了"))
+    assert main.llm.chime_calls == []                       # 預設＝只有測試伺服器
+    listed = kits(llm=FakeLLM("恭喜", GOOD), guild=MAIN_GUILD, chime_guild_ids=[str(MAIN_GUILD)])
+    listed.run(listed.say(AMING, "我考上研究所了"))
+    assert len(listed.llm.chime_calls) == 1
+    test = kits(llm=FakeLLM("恭喜", GOOD), chime_guild_ids=[str(MAIN_GUILD)])
+    test.run(test.say(AMING, "我考上研究所了"))
+    assert test.llm.chime_calls == []                       # 有填就照填的，測試伺服器也不例外
+
+
+def test_each_server_uses_only_its_own_emoji_catalog(kits):
+    from botkit import TEST_GUILD
+    from yuki import emoji_catalog as cat
+    item = [{"id": "11", "name": "happy", "kind": "emoji", "uses": 50, "meaning": "開心", "use": True}]
+
+    def system_for(guild, sets, **kw):
+        kit = kits(guild=guild, emoji_sets=sets, **kw)
+        kit.run(kit.say(AMING, "yuki 在嗎"))
+        return kit.llm.reply_calls[0][0]["content"]
+
+    both = {str(TEST_GUILD): cat.EmojiSet(str(TEST_GUILD), item), str(MAIN_GUILD): cat.EmojiSet(str(MAIN_GUILD), item)}
+    assert ":happy:" in system_for(TEST_GUILD, both)        # EMOJI_GUILD_IDS 留空＝只有測試伺服器
+    assert ":happy:" not in system_for(MAIN_GUILD, both)
+    assert ":happy:" in system_for(MAIN_GUILD, both, emoji_guild_ids=[str(MAIN_GUILD)])
+    only_main = {str(MAIN_GUILD): cat.EmojiSet(str(MAIN_GUILD), item)}
+    assert ":happy:" not in system_for(TEST_GUILD, only_main)  # 測試伺服器不借主伺服器的圖鑑
+
+
+def test_mentioning_her_bot_role_counts_as_calling_but_other_roles_do_not(kits):
+    from types import SimpleNamespace as NS
+    bot_role, other = NS(is_bot_managed=lambda: True), NS(is_bot_managed=lambda: False)
+
+    def mention(role):
+        kit = kits(guild=MAIN_GUILD)
+        kit.guild.me.roles = [bot_role, other]
+        msg = kit.say(AMING, "<@&1> 看這個")
+        msg.role_mentions = [role]
+        kit.run(msg)
+        return kit.replies
+
+    assert len(mention(bot_role)) == 1   # 在輸入框選到 bot 的身分組「@Yuki」也算叫她
+    assert mention(other) == []

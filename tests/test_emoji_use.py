@@ -2,7 +2,6 @@
 from types import SimpleNamespace as NS
 
 from yuki import chime, emoji_catalog as cat, prompts
-from yuki.bot import YukiBot
 from yuki.brain import _NAME_PREFIX
 from yuki.chat import ChatLine, Person
 from yuki.voice.tts import sentences, speakable
@@ -12,26 +11,6 @@ ITEMS = [
     {"id": "12", "name": "dance", "kind": "emoji", "animated": True, "uses": 40, "looks": "貓在跳舞", "use": True},
     {"id": "21", "name": "wave", "kind": "sticker", "uses": 0, "looks": "揮手", "use": True},
 ]
-
-
-def _bot(emoji_sets, emoji_ids=(), test_ids=("1",)):
-    return NS(settings=NS(emoji_guild_ids=list(emoji_ids), test_guild_ids=list(test_ids)), emoji_sets=emoji_sets)
-
-
-def test_emoji_set_only_own_guild_and_allowed_guilds():
-    sets = {"1": cat.EmojiSet("1", ITEMS), "9": cat.EmojiSet("9", ITEMS)}
-    b = _bot(sets)
-    assert YukiBot.emoji_set(b, NS(id=1)) is sets["1"]
-    assert YukiBot.emoji_set(b, NS(id=9)) is None           # 圖鑑有，但 EMOJI_GUILD_IDS 留空＝只有測試伺服器
-    assert YukiBot.emoji_set(b, None) is None
-    b.settings.emoji_guild_ids = ["9"]
-    assert YukiBot.emoji_set(b, NS(id=9)) is sets["9"] and YukiBot.emoji_set(b, NS(id=1)) is None
-
-
-def test_test_guild_without_own_catalog_does_not_borrow_main():
-    """測試伺服器（1）沒有自己的圖鑑，主伺服器（9）有：不借。"""
-    b = _bot({"9": cat.EmojiSet("9", ITEMS)}, test_ids=("1",))
-    assert YukiBot.emoji_set(b, NS(id=1)) is None
 
 
 def test_unreviewed_catalog_not_loaded(tmp_path):
