@@ -105,7 +105,7 @@ def test_persona_covers_openings_taunts_and_tagged_people():
 def test_swear_words_skip_ordinary_words_with_the_same_characters():
     for t in ["幹今天輸到爆", "靠北喔", "他媽的", "北七", "操你的", "三小", "幹 你說什麼"]:
         assert has_swear(t), t
-    for t in ["你在幹嘛", "幹什麼", "幹話王", "能幹", "樹幹", "操場", "體操", "靠近一點", "好喔"]:
+    for t in ["你在幹嘛", "幹什麼", "幹話王", "能幹", "樹幹", "操場", "體操", "靠近一點", "好喔", "大家幹瞪眼"]:
         assert not has_swear(t), t
 
 
