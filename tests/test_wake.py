@@ -60,3 +60,11 @@ def test_english_name_must_match_the_whole_word():
 def test_no_name_is_neither():
     assert not direct_call("你覺得呢", W, EXIT) and not named("你覺得呢", W)
     assert not direct_call("", W, EXIT) and not direct_call(None, W, EXIT)
+
+
+def test_asking_if_she_is_there_is_a_direct_call():
+    wake = wake_pattern(["yuki"])
+    assert direct_call("Yuki 在嗎", wake)
+    assert direct_call("yuki在不在", wake)
+    assert direct_call("Yuki 在？", wake)
+    assert not direct_call("Yuki 在打遊戲的時候很吵", wake)

@@ -3,7 +3,7 @@
 bot.py 和評估腳本（scripts/eval_chime.py）共用，兩邊才不會漂移。
 
 - 直接叫名字（`direct_call`）：名字在句首（前面只允許空白、標點、@、短的招呼語），而且名字後面
-  是標點或結尾、緊接著「你／妳」、或剩下的話是結束字／閉嘴類。→ 一定回。
+  是標點或結尾、緊接著「你／妳」或「在嗎」、或剩下的話是結束字／閉嘴類。→ 一定回。
 - 其他有名字的（句中、句尾、句首但接的是評論）＝提到她（`named`）：有開插話的伺服器交給插話判斷。
 """
 from __future__ import annotations
@@ -46,6 +46,8 @@ _LEAD = re.compile(rf"[\W_]*(?:(?:{_GREET})[\W_]*){{0,2}}", re.IGNORECASE)
 # 名字後面只剩標點、表情、招呼語（整則就是叫名字）
 _ONLY_GREETING = re.compile(rf"(?:[\W_]|{_GREET})*", re.IGNORECASE)
 _YOU = re.compile(r"\s*[你妳]")
+# 「Yuki 在嗎」「Yuki 在不在」：問她在不在，也是在叫她
+_THERE = re.compile(r"\s*在(?:嗎|嘛|不在|[?？]|\s*$)")
 
 
 def _rest_after_leading_name(text: str, wake: re.Pattern) -> str | None:
@@ -65,7 +67,7 @@ def direct_call(text: str, wake: re.Pattern, exit_words: Iterable[str] = ()) -> 
     head = rest.lstrip()
     if head and _is_punct(head[0]):  # 名字後面接標點：「Yuki，…」「Yuki? …」
         return True
-    if _YOU.match(rest):  # 「Yuki 你…」
+    if _YOU.match(rest) or _THERE.match(rest):  # 「Yuki 你…」「Yuki 在嗎」
         return True
     return is_exit(rest, exit_words) or is_shush(rest)
 
