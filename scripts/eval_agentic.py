@@ -20,6 +20,8 @@ from pathlib import Path
 
 from yuki import prompts
 from yuki.archive import ArchiveDB, ArchivedMessage
+from yuki.brain import reply_messages
+from yuki.chat import ChatLine, Person
 from yuki.config import ROOT, load_settings
 from yuki.llm import LMStudioClient
 from yuki.text_index import add_words
@@ -64,7 +66,8 @@ async def run_case(llm, db, case: dict, guild: str, *, rounds: int) -> dict:
 
     system = prompts.reply_system("Yuki", today, archive=True)
     author = case["author"]["name"]
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": f"[{author}] {case['query']}"}]
+    # 跟 Brain.reply 一樣組 messages（最新一則後面附「這次回覆」的提示，R2／D-36）
+    messages = reply_messages(system, [ChatLine(Person(author, author), case["query"])], "Yuki")
     t = time.time()
     reply = await llm.chat_tools(messages, TOOL_SPECS, call, max_rounds=rounds)
     return {"query": case["query"], "expected": case["expected"], "seen": tools.seen, "calls": calls,
