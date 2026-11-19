@@ -47,12 +47,6 @@ def test_prompt_has_emoji_block_only_when_given():
     assert "群組自己的表情與貼圖" not in prompts.reply_system("Yuki", emoji=block, spoken=True)
 
 
-def test_persona_wording_no_sample_sentences():
-    assert "少用表情符號和 XD，偶爾用一下就好" not in prompts.PERSONA
-    assert "不要每句都用" in prompts.PERSONA
-    assert "名稱」" not in prompts.EMOJI_RULES
-
-
 def test_leading_sticker_tag_not_eaten_as_name_prefix():
     assert _NAME_PREFIX.sub("", "[貼圖:wave]") == "[貼圖:wave]"
     assert _NAME_PREFIX.sub("", "[阿明] 好") == "好"

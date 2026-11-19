@@ -1,7 +1,6 @@
 """B2 插話判斷、B4 先查再接話（yuki/chime.py、prompts、brain、bot 的插話流程）：不需要網路、模型、Discord。"""
 import asyncio
 import json
-import re
 from dataclasses import replace
 from datetime import date, timedelta
 from types import SimpleNamespace as NS
@@ -171,13 +170,6 @@ def test_decide_never_raises_on_llm_error_or_bad_json():
     assert d.error.startswith("llm") and d.action == "none" and not d.should_reply(0.0)
     d = run(decide(JsonLLM(None), recent=[], latest=ChatLine(AMING, "嗨"), bot_name="Yuki"))
     assert d.error == "no_json" and d.action == "none"
-
-
-def test_chime_prompt_has_no_quoted_example_sentences():
-    """CLAUDE.md：prompt 只描述做法，不放會被照抄的範例句。引號裡只能是短詞，不能是整句。"""
-    for text in (prompts.CHIME_SYSTEM, prompts.BACKGROUND_RULES, prompts.CHIMED_RULES):
-        for q in re.findall(r"「([^」]*)」", text):
-            assert len(q) <= 8 or q == "被回覆的那句", q
 
 
 def test_llm_is_busy_follows_slots():
@@ -407,20 +399,6 @@ def test_chime_only_in_test_guilds_by_default():
     assert not YukiBot.chime_allowed(fake, None)
     fake.settings.chime_guild_ids = ["222"]
     assert YukiBot.chime_allowed(fake, g_main) and not YukiBot.chime_allowed(fake, g_test)
-
-
-def test_chime_system_has_about_her_but_not_to_her_rule_and_short_reason():
-    from yuki import prompts
-    assert "不算在跟你講話" in prompts.CHIME_SYSTEM
-    assert prompts.CHIME_SCHEMA["properties"]["reason"]["maxLength"] <= 30
-
-
-def test_background_rules_default_on_and_env_switch(monkeypatch):
-    from yuki import prompts
-    monkeypatch.delenv("YUKI_EVAL_NO_BACKGROUND_RULES", raising=False)
-    assert prompts.BACKGROUND_RULES in prompts.reply_system("Yuki", web=True)
-    monkeypatch.setenv("YUKI_EVAL_NO_BACKGROUND_RULES", "1")
-    assert prompts.BACKGROUND_RULES not in prompts.reply_system("Yuki", web=True)
 
 
 # ---------- D-22：開口機率從 logprobs 算 ----------

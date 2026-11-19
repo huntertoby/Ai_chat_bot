@@ -19,7 +19,7 @@ TOOL_SPECS = [
                        "用關鍵字比對訊息內容，不是語意搜尋：關鍵字用短的名詞，同一件事換 2～3 種說法一起給。",
         "parameters": {"type": "object", "properties": {
             "keywords": {"type": "array", "items": {"type": "string"},
-                         "description": "關鍵字，例如問搬家就給 [\"搬家\", \"新家\", \"租屋\"]；任一個符合就算"},
+                         "description": "關鍵字：短的名詞，同一件事給幾種說法；任一個符合就算"},
             "person": {"type": "string", "description": "只找這個人說的話（名字），不限就留空"},
             "since": {"type": "string", "description": "從這天開始 YYYY-MM-DD，不限就留空"},
             "until": {"type": "string", "description": "到這天為止 YYYY-MM-DD，不限就留空"},
