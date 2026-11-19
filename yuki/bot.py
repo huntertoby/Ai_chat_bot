@@ -682,7 +682,7 @@ class YukiBot(commands.Bot):
             if d is not None:
                 tr.lat("decide", d.ms)
                 info.update(decision=d.to_dict(), threshold=self.replies.limits.threshold,
-                            prob=round(d.participate, 3), prob_source=d.prob_source, images=len(images))
+                            prob=round(d.participate, 3), images=len(images))
                 plan = self.replies.plan_chime(d, cid, uid, attention=attention)
                 info["action"] = "none" if plan == "error" else plan
                 if plan == "error":

@@ -45,11 +45,8 @@ def test_flood_replay_uses_burst_mode_and_merges_collected_calls(tmp_path, monke
 
 
 def test_eval_uses_production_decide_options_unless_overridden(monkeypatch):
-    s = replace(Settings(), chime_use_logprobs=False, chime_context_lines=9)
-    monkeypatch.setattr(eval_chime, "USE_LOGPROBS", None)
-    assert eval_chime.decide_opts(s)["use_logprobs"] is False and eval_chime.decide_opts(s)["context_lines"] == 9
-    monkeypatch.setattr(eval_chime, "USE_LOGPROBS", True)
-    assert eval_chime.decide_opts(s)["use_logprobs"] is True
+    s = replace(Settings(), chime_context_lines=9)
+    assert eval_chime.decide_opts(s)["context_lines"] == 9 and "use_logprobs" not in eval_chime.decide_opts(s)
     monkeypatch.setattr(eval_chime, "THINK_ON_MENTION", None)  # D-29 兩段式也照正式設定
     assert eval_chime.decide_opts(replace(s, chime_think_on_mention=True))["think_on_mention"] is True
     monkeypatch.setattr(eval_chime, "THINK_ON_MENTION", False)

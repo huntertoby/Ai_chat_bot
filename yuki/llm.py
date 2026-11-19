@@ -223,8 +223,7 @@ class LMStudioClient:
             tr.add_attempt(payload.get("messages", []), None, (time.monotonic() - t0) * 1000,
                            error=f"{type(e).__name__}: {e}"[:300])
             raise
-        tr.add_attempt(payload.get("messages", []), {k: v for k, v in message.items() if k != "_logprobs"},
-                       (time.monotonic() - t0) * 1000)  # logprobs 很大，不進追蹤
+        tr.add_attempt(payload.get("messages", []), message, (time.monotonic() - t0) * 1000)
         return message
 
     async def _send(self, payload: dict[str, Any], reasoning_effort: str) -> dict[str, Any]:
@@ -258,8 +257,6 @@ class LMStudioClient:
                 if not message.get("content") and not message.get("tool_calls") \
                         and choice.get("finish_reason") == "length":
                     log.warning("模型把 token 用完在推理上，沒有產生回答；可調低 LLM_REASONING_EFFORT")
-                if payload.get("logprobs"):  # 只有要求 logprobs 的呼叫才帶（其他呼叫的回傳不變）
-                    message = {**message, "_logprobs": choice.get("logprobs")}
                 return message
             except httpx.TimeoutException as e:
                 # 逾時代表模型還在跑，重試只會讓使用者再等一輪
@@ -380,22 +377,3 @@ class LMStudioClient:
         if result is None:
             log.warning("JSON 解析失敗，原始輸出前 200 字：%s", raw[:200])
         return result
-
-    async def chat_json_logprobs(self, messages: list[dict], schema: dict, *, name: str = "result",
-                                 temperature: float = 0.0, max_tokens: int | None = None,
-                                 top_logprobs: int = 5) -> tuple[dict | None, list[dict] | None]:
-        """跟 chat_json 一樣（不思考），另外回傳每個輸出 token 的 top_logprobs（choices[0].logprobs.content）。
-        只有關掉思考時 LM Studio 才給 logprobs；拿不到回 None，呼叫端自己退回。"""
-        payload = {
-            "messages": messages, "temperature": temperature, "max_tokens": max_tokens or self.max_tokens,
-            "logprobs": True, "top_logprobs": top_logprobs,
-            "response_format": {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}},
-        }
-        message = await self._request(payload, "none")
-        raw = message.get("content") or ""
-        result = extract_json(raw)
-        if result is None:
-            log.warning("JSON 解析失敗，原始輸出前 200 字：%s", raw[:200])
-        lp = message.get("_logprobs")
-        content = lp.get("content") if isinstance(lp, dict) else None
-        return result, content if isinstance(content, list) and content else None

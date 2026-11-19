@@ -203,16 +203,6 @@ def test_decide_thinks_only_when_latest_mentions_her():
     assert d3.path == "fast" and llm3.kw[0][1]["reasoning_effort"] == "none"
 
 
-def test_decide_think_path_skips_logprobs():
-    class LpLLM(JsonLLM):
-        async def chat_json_logprobs(self, *a, **kw):
-            raise AssertionError("思考時不取 logprobs")
-    llm = LpLLM(GOOD)
-    d = run(decide(llm, recent=[], latest=ChatLine(AMING, "Yuki 好爛"), bot_name="Yuki", think_on_mention=True,
-                   use_logprobs=True))
-    assert d.path == "think" and d.prob_source == "participate"
-
-
 def test_d29_kinds_split_to_me_and_about_me():
     assert {"to_me", "about_me"} <= set(chime.KINDS)
     assert parse_decision({**GOOD, "kind": "to_me"}).kind == "to_me"
@@ -439,78 +429,16 @@ def traces(tmp_path):
 # 插話判斷整條流程（去抖動、限制、按表情、追蹤紀錄）在 test_bot_flow.py（整合）和 test_scheduler.py
 
 
-# ---------- D-22：開口機率從 logprobs 算 ----------
-def _lp_content(open_lp, closed=(), *, text_before='{"reason": "x", "kind": "other", "action": "', value="reply"):
-    """做出 LM Studio 風格的 logprobs.content：前面的文字拆成幾個 token，最後是 action 的值，附 top_logprobs。"""
-    toks = [{"token": t, "logprob": 0.0, "top_logprobs": [{"token": t, "logprob": 0.0}]}
-            for t in (text_before[:10], text_before[10:])]
-    alts = [{"token": value, "logprob": open_lp}] + [{"token": n, "logprob": lp} for n, lp in closed]
-    toks.append({"token": value, "logprob": open_lp, "top_logprobs": alts})
-    toks.append({"token": '",', "logprob": 0.0, "top_logprobs": []})
-    return toks
+# ---------- D-32：logprobs 路徑已移除，一律用模型寫的 participate＋門檻 ----------
+def test_decide_uses_written_participate_and_threshold_is_applied_outside():
+    d = run(decide(JsonLLM({**GOOD, "participate": 0.65}), recent=[], latest=ChatLine(AMING, "我考上了"),
+                   bot_name="Yuki"))
+    assert d.participate == pytest.approx(0.65) and d.should_reply(0.6) and not d.should_reply(0.7)
+    assert "prob_source" not in d.to_dict()
 
 
-class LPLLM(JsonLLM):
-    def __init__(self, reply, content, **kw):
-        super().__init__(reply, **kw)
-        self.content = content
-
-    async def chat_json_logprobs(self, messages, schema, **kw):
-        self.calls.append(messages)
-        self.kw.append((schema, kw))
-        if self.error:
-            raise self.error
-        return self.reply, self.content
-
-
-def test_action_prob_sums_open_over_open_plus_closed():
-    import math
-    c = _lp_content(math.log(0.6), [("react", math.log(0.2)), ("none", math.log(0.1)), ("other", math.log(0.1))])
-    assert chime.action_prob(c) == pytest.approx(0.6 / 0.9)
-    assert chime.action_prob(_lp_content(-0.0, [("react", -12.0), ("none", -15.0)])) > 0.999
-    assert chime.action_prob(_lp_content(-20.0, [("react", -2.0), ("none", -0.1)])) < 0.001
-
-
-def test_action_prob_handles_token_with_quote_and_space_and_missing_position():
-    import math
-    c = _lp_content(math.log(0.5), [("none", math.log(0.5))], value=' "reply')
-    c[-2]["top_logprobs"][1]["token"] = ' "none'
-    assert chime.action_prob(c) == pytest.approx(0.5)
-    assert chime.action_prob(None) is None and chime.action_prob([]) is None
-    assert chime.action_prob([{"token": "{}", "logprob": 0, "top_logprobs": []}]) is None
-    # 前幾名裡完全沒有 action 的選項 → 算不出來
-    assert chime.action_prob(_lp_content(-1.0, [], value="zzz")) is None
-
-
-def test_decide_uses_logprob_probability_and_threshold_is_applied_outside():
-    import math
-    c = _lp_content(math.log(0.65), [("none", math.log(0.35))])
-    d = run(decide(LPLLM(GOOD, c), recent=[], latest=ChatLine(AMING, "我考上了"), bot_name="Yuki"))
-    assert d.prob_source == "logprob" and d.participate == pytest.approx(0.65)
-    assert d.model_participate == 0.9  # 模型自己寫的只留作參考
-    assert d.should_reply(0.6) and not d.should_reply(0.7)
-    assert d.to_dict()["prob_source"] == "logprob"
-
-
-def test_decide_falls_back_to_written_participate_without_logprobs():
-    d = run(decide(LPLLM(GOOD, None), recent=[], latest=ChatLine(AMING, "x"), bot_name="Yuki"))
-    assert d.prob_source == "participate" and d.participate == 0.9 and d.should_reply(0.7)
-    d = run(decide(LPLLM(GOOD, [{"token": "{}", "logprob": 0, "top_logprobs": []}]), recent=[],
-                   latest=ChatLine(AMING, "x"), bot_name="Yuki"))
-    assert d.prob_source == "participate" and d.participate == 0.9
-    d = run(decide(LPLLM(GOOD, _lp_content(-0.1)), recent=[], latest=ChatLine(AMING, "x"), bot_name="Yuki",
-                   use_logprobs=False))
-    assert d.prob_source == "participate"
-
-
-def test_logprob_mode_react_ignores_threshold_and_error_never_replies():
-    d = Decision(participate=0.05, action="react", emoji="🎉", prob_source="logprob")
-    assert d.should_react(0.0) and d.should_react(0.7) and not d.should_reply(0.5)
-    assert not Decision(participate=1.0, prob_source="logprob", error="x").should_reply(0.5)
-
-
-def test_decide_logprob_llm_error_still_returns_error_decision():
-    d = run(decide(LPLLM(None, None, error=LLMError("down")), recent=[], latest=ChatLine(AMING, "x"), bot_name="Yuki"))
+def test_decide_llm_error_returns_error_decision():
+    d = run(decide(JsonLLM(None, error=LLMError("down")), recent=[], latest=ChatLine(AMING, "x"), bot_name="Yuki"))
     assert d.error and not d.should_reply(0.0)
 
 
@@ -525,11 +453,9 @@ def test_chime_threshold_setting_prefers_prob_threshold_over_old_name(monkeypatc
     assert ChimeLimits(1, threshold=None).threshold == 0.7  # 沒設就照 CHIME_IN 等級
 
 
-def test_use_logprobs_setting_defaults_off(monkeypatch):
-    monkeypatch.delenv("CHIME_USE_LOGPROBS", raising=False)
-    assert Settings().chime_use_logprobs is False
-    monkeypatch.setenv("CHIME_USE_LOGPROBS", "1")
-    assert Settings().chime_use_logprobs is True
+def test_logprobs_setting_is_gone():
+    assert not hasattr(Settings(), "chime_use_logprobs")
+    assert not hasattr(chime, "action_prob") and not hasattr(chime, "action_dist")
 
 
 def test_named_message_skips_channel_interval_but_not_mute():

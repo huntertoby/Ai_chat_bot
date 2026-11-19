@@ -64,7 +64,7 @@ def throttle_config(s: Settings) -> throttle.ThrottleConfig:
 def decide_options(s: Settings) -> dict:
     """正式設定給 chime.decide() 的參數（bot 和評估腳本共用，兩邊才不會漂移）。"""
     return {"context_lines": s.chime_context_lines, "max_tokens": s.chime_max_tokens,
-            "use_logprobs": s.chime_use_logprobs, "think_on_mention": s.chime_think_on_mention,
+            "think_on_mention": s.chime_think_on_mention,
             "think_max_tokens": s.chime_think_max_tokens, "aliases": list(s.wake_words)}
 
 

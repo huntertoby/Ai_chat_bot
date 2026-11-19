@@ -207,7 +207,7 @@ async def eval_react(llm, eset: cat.EmojiSet, s) -> dict:
         latest = to_line(c["latest"], images=False)
         d = await chime.decide(llm, recent=recent, latest=latest, bot_name=BOT_NAME, attention=False,
                                context_lines=s.chime_context_lines, max_tokens=s.chime_max_tokens,
-                               use_logprobs=False, emoji_block=block)
+                               emoji_block=block)
         is_name, real = eset.react_name(d.emoji) if d.emoji else (False, "")
         valid = d.should_react(0.0) and bool(real if is_name else d.emoji)
         row = {"id": c["id"], "label": c["label"], "action": d.action, "emoji": d.emoji, "valid": valid,

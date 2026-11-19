@@ -36,8 +36,7 @@ from yuki.wake import wake_pattern
 from ._eval_b_common import BOT_NAME, EVAL_DIR, RESULT_DIR, load_jsonl, make_llm, speed, to_line
 
 THRESHOLD: float | None = None  # None＝正式設定的門檻
-SWEEP = (0.5, 0.6, 0.7, 0.8)  # D-22：離線掃門檻（同一次跑記下機率，門檻在程式外套用）
-USE_LOGPROBS: bool | None = None  # None＝正式設定（CHIME_USE_LOGPROBS）
+SWEEP = (0.5, 0.6, 0.7, 0.8)  # D-22：離線掃門檻（同一次跑記下 participate，門檻在程式外套用）
 THINK_ON_MENTION: bool | None = None  # None＝正式設定（CHIME_THINK_ON_MENTION，D-29 兩段式）
 EMOJI_BLOCK = ""  # C1-2：--emoji 指到圖鑑時，插話判斷帶 10 張群組表情清單（跟上線時一樣）
 
@@ -55,10 +54,8 @@ def _images_of(lines: list[ChatLine], n: int = 3) -> list[str]:
 
 
 def decide_opts(s) -> dict:
-    """正式設定給 decide() 的參數；--logprobs / --no-logprobs 才蓋過。"""
+    """正式設定給 decide() 的參數；--think-on-mention / --no-think 才蓋過。"""
     opts = decide_options(s)
-    if USE_LOGPROBS is not None:
-        opts["use_logprobs"] = USE_LOGPROBS
     if THINK_ON_MENTION is not None:
         opts["think_on_mention"] = THINK_ON_MENTION
     return {**opts, "emoji_block": EMOJI_BLOCK}
@@ -112,8 +109,7 @@ async def eval_chime(llm, s, tag: str | None) -> dict:
                             "speed": speed([r["decision"]["ms"] for r in rs])}
     loose = sum(((r["pred"] or r["react"]) == r["expect"]) for r in rows) / max(n, 1)
     kinds = Counter((r["expect"], r["pred"]) for r in rows)
-    return {"sweep": sweep_chime(rows), "prob_source": dict(Counter(r["decision"].get("prob_source") for r in rows)),
-            "n": n, "accuracy": round(sum(r["ok"] for r in rows) / max(n, 1), 3),
+    return {"sweep": sweep_chime(rows), "n": n, "accuracy": round(sum(r["ok"] for r in rows) / max(n, 1), 3),
             "accuracy_react_counts": round(loose, 3), "by_label": by, "by_tag": by_tag, "by_path": by_path,
             "pronoun": {"n": len(pro), "correct": sum(r["ok"] for r in pro), "all_correct": all(r["ok"] for r in pro)},
             "false_positive": kinds[(False, True)], "false_negative": kinds[(True, False)],
@@ -132,7 +128,7 @@ def sweep_chime(rows: list[dict], thresholds=SWEEP) -> dict:
     for th in thresholds:
         def pred(r, th=th):
             return chime.Decision(**{k: v for k, v in r["decision"].items()
-                                     if k in ("participate", "action", "prob_source", "error")}).should_reply(th)
+                                     if k in ("participate", "action", "error")}).should_reply(th)
         by = {}
         for lab in ("talk_to_me", "about_me", "others"):
             rs = [r for r in rows if r["label"] == lab]
@@ -165,7 +161,7 @@ async def eval_milestone(llm, s) -> dict:
     for th in SWEEP:
         def pr(r, th=th):
             dd = r["decision"]
-            return chime.Decision(participate=dd["participate"], action=dd["action"], prob_source=dd["prob_source"],
+            return chime.Decision(participate=dd["participate"], action=dd["action"],
                                   error=dd.get("error", "")).should_reply(th)
         sweep[str(th)] = {"milestone_rate": round(sum(pr(r) for r in ms) / max(len(ms), 1), 3),
                           "repost_rate": round(sum(pr(r) for r in rp) / max(len(rp), 1), 3)}
@@ -404,7 +400,7 @@ async def eval_flood(llm, s, args) -> dict:
 
 
 async def main() -> None:
-    global THRESHOLD, USE_LOGPROBS, EMOJI_BLOCK, THINK_ON_MENTION
+    global THRESHOLD, EMOJI_BLOCK, THINK_ON_MENTION
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", action="append", choices=["chime", "milestone", "flood"])
     ap.add_argument("--tag", default=None, help="只跑 chime 題目裡帶這個 tag 的")
@@ -412,10 +408,6 @@ async def main() -> None:
     ap.add_argument("--no-real-replies", action="store_true", help="洗版重播不實際產生 10 則回覆")
     ap.add_argument("--out", default="eval_chime")
     ap.add_argument("--threshold", type=float, default=None, help="主結果用的門檻（預設＝正式設定；掃描表另外列 0.5~0.8）")
-    lp = ap.add_mutually_exclusive_group()
-    lp.add_argument("--logprobs", dest="logprobs", action="store_true", default=None,
-                    help="開口機率從 logprobs 算（預設照 CHIME_USE_LOGPROBS）")
-    lp.add_argument("--no-logprobs", dest="logprobs", action="store_false", help="用模型寫的 participate")
     th = ap.add_mutually_exclusive_group()
     th.add_argument("--think-on-mention", dest="think", action="store_true", default=None,
                     help="D-29 兩段式：提到她才思考（預設照 CHIME_THINK_ON_MENTION）")
@@ -425,7 +417,7 @@ async def main() -> None:
     ap.add_argument("--emoji", type=Path, default=None, help="C1-2：圖鑑檔（不看 reviewed），帶表情清單跑插話判斷")
     ap.add_argument("--emoji-n", type=int, default=0, help="表情清單放幾張（預設 emoji_catalog.REACT_N）")
     args = ap.parse_args()
-    THRESHOLD, USE_LOGPROBS, THINK_ON_MENTION = args.threshold, args.logprobs, args.think
+    THRESHOLD, THINK_ON_MENTION = args.threshold, args.think
     if args.emoji:
         from yuki import emoji_catalog
         eset = emoji_catalog.load_set(args.emoji, require_reviewed=False)
