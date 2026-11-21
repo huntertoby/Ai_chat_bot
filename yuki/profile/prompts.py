@@ -1,6 +1,8 @@
 """人物檔案用的 prompt：抽取（聊天段落 → 一條條資訊）與整理（資訊 → 每人一份 .md）。"""
 from __future__ import annotations
 
+import re
+
 from .store import KINDS
 
 # ================= 抽取 =================
@@ -151,9 +153,12 @@ REVIEW_SCHEMA = {
 }
 
 
+_BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+
 def review_user(name: str, old: list[tuple[int, str, str]], facts: list[str], file_day: str) -> str:
     """old：[(編號, 所在小節, 原文)]；facts：新資訊（依序編號）。"""
-    olds = "\n".join(f"{no}. 〔{sec.lstrip('# ')}〕{text.strip().lstrip('- ')}" for no, sec, text in old)
+    olds = "\n".join(f"{no}. 〔{sec.lstrip('# ')}〕{_BULLET.sub('', text)}" for no, sec, text in old)
     news = "\n".join(f"#{i} {f.lstrip('- ')}" for i, f in enumerate(facts, 1))
     since = f"（檔案資料到 {file_day}）" if file_day else ""
     return f"【舊條目】{since}\n{olds}\n\n【新資訊】（{name}）\n{news}"

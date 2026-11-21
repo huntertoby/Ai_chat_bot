@@ -208,3 +208,12 @@ def test_restore_cmd_puts_line_back(tmp_path, capsys):
     assert "養了一隻貓" in files.read(G, "1").split("## 近況")[0]
     assert files.removed(G, "1")[0]["restored"] is True
     assert json.loads(files.removed_path(G, "1").read_text(encoding="utf-8").splitlines()[0])["restored"]
+
+
+def test_numbered_lines_accepts_star_and_numbered_bullets():
+    body = "## 基本資料\n*   阿明 是大學生\n    *   細節\n## 聊天提示\n1. 可以聊羽球\n*   （還不清楚）"
+    lines = revise.numbered_lines(body)
+    assert [l.text for l in lines] == ["*   阿明 是大學生", "    *   細節", "1. 可以聊羽球"]
+    from yuki.profile.prompts import review_user
+    assert "1. 〔基本資料〕阿明 是大學生" in review_user("阿明", [(l.no, l.section, l.text) for l in lines], ["- x"], "")
+    assert revise.split_corrections("## 本人更正\n*   （2026-01-01）x\n## 基本資料")[0] == ["*   （2026-01-01）x"]

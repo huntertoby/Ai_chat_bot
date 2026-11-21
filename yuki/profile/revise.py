@@ -17,6 +17,7 @@ CORRECTION_NOTE = "（這一節是他本人親口更正的，跟下面其他內�
 MEME_HEAD = "## 群組梗與綽號"
 MAX_REMOVALS = 3          # 一次合併（一個人）最多刪幾行
 _NOT_EVIDENCE = ("joke", "meme")
+_BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")  # 條列行：- / * / + / 1.（模型輸出兩種都有）
 _HEADER_DAY = re.compile(r"資料到 (\d{4}-\d{2}-\d{2})")
 # 行內的日期：2026-10-05、2026-10、2026/10、2023 年、2023：
 _DATES = re.compile(r"(?<!\d)(20\d{2})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?(?!\d)")
@@ -38,7 +39,7 @@ def split_corrections(text: str) -> tuple[list[str], str]:
         if inside and line.startswith("## "):
             inside = False
         if inside:
-            if line.strip().startswith("- "):
+            if _BULLET.match(line):
                 items.append(line.strip())
             continue
         out.append(line)
@@ -87,7 +88,9 @@ def numbered_lines(body: str) -> list[OldLine]:
         if s.startswith("## "):
             section = s
             continue
-        if section == CORRECTION_HEAD or not s.startswith("- ") or s in ("- （還不清楚）", "- 還不清楚"):
+        if section == CORRECTION_HEAD or not _BULLET.match(line):
+            continue
+        if _BULLET.sub("", line).strip() in ("（還不清楚）", "還不清楚"):
             continue
         out.append(OldLine(len(out) + 1, section, line))
     return out
