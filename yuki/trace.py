@@ -136,6 +136,7 @@ class Trace:
         self.attempts: list[dict] = []
         self.images: list[dict] = []  # 附了哪些圖：只記來源訊息 ID，不記內容
         self.final: str | None = None
+        self.emoji_pick: dict | None = None  # D-37：挑表情的結果（選了什麼、花多久、不配的原因）
         self.error: str | None = None
         self._t0 = time.monotonic()
         self._ts = datetime.now()
@@ -167,6 +168,8 @@ class Trace:
                 "guild": self.guild, "channel": self.channel, "trigger": self.trigger,
                 "outcome": self.outcome, "degraded": self.degraded, "latency_ms": lat,
                 "attempts": self.attempts, "final": self.final, "error": self.error}
+        if self.emoji_pick is not None:
+            rec["emoji_pick"] = self.emoji_pick
         if self.images:  # 有附圖才多這兩欄：張數和來源訊息 ID（不記圖片內容）
             rec["images"] = len(self.images)
             rec["image_sources"] = self.images

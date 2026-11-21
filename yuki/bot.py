@@ -15,7 +15,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from . import alert, chime, emoji_catalog, throttle, trace, vision
+from . import alert, chime, emoji_catalog, emoji_pick, throttle, trace, vision
 from .archive import ArchiveDB
 from .archive_sync import ArchiveSync, is_public
 from .brain import Brain
@@ -662,7 +662,9 @@ class YukiBot(commands.Bot):
                              trigger=turn.trigger, user_ids=[author.id, *(m.id for m in mentions)])
             self._hide_optouts(tr, channel_key, self._replied_person(message))
             eset = self.emoji_set(message.guild)
-            emoji_ok = eset is not None and self.emoji_pacing.allow(cid)  # 剛用過就這則不放清單
+            emoji_ok = eset is not None and self.emoji_pacing.allow(cid)  # 剛用過就這則不挑表情
+            started = time.monotonic()
+            sticker = None
             async with tr:
                 async with message.channel.typing():
                     await self._fill_reply_refs(message.channel)
@@ -672,6 +674,12 @@ class YukiBot(commands.Bot):
                                                    owner=self.owner_name(message.guild),
                                                    archive_guild=self.archive_guild(message.guild),
                                                    background=turn.background, chimed=turn.chimed)
+                    # 群組表情（安全網）：模型自己寫的 `:名稱:` 換成 <:名稱:ID>、壞名稱刪掉、一則最多一個；貼圖另外附。
+                    # 沒有圖鑑時只清掉 `:名稱:` 和 [貼圖:…]，模型照抄的 <:名稱:ID> 原樣留著
+                    reply, sticker = emoji_catalog.process_reply(reply, eset, allow=emoji_ok)
+                    already = bool(sticker) or bool(emoji_catalog.CUSTOM_EMOJI.search(reply))
+                    if emoji_ok and reply and not already:  # D-37：回話寫好後，依回話挑一張（或不配）
+                        reply, sticker = await self._pick_emoji(eset, turn.text, reply, started, tr)
                 tr.final = reply
         except LLMError as e:
             # 用 warning：ERROR 會被 AlertLogHandler 當成另一種錯誤再通知一次
@@ -683,9 +691,6 @@ class YukiBot(commands.Bot):
             return False
         finally:
             self._replying -= 1
-        # 群組表情：`:名稱:` 換成 <:名稱:ID>、壞名稱刪掉、一則最多一個；貼圖另外附。
-        # 沒有圖鑑時只清掉 `:名稱:` 和 [貼圖:…]，模型照抄的 <:名稱:ID> 原樣留著
-        reply, sticker = emoji_catalog.process_reply(reply, eset, allow=emoji_ok)
         if eset is not None:
             self.emoji_pacing.record(cid, bool(sticker) or bool(emoji_catalog.CUSTOM_EMOJI.search(reply)))
         if not reply and not sticker:
@@ -707,6 +712,22 @@ class YukiBot(commands.Bot):
         bot_line = ChatLine(person(self.user), reply or "[貼圖]", is_bot=True)
         self.brain.observe(channel_key, bot_line)
         return True
+
+    async def _pick_emoji(self, eset, said: str, reply: str, started: float, tr) -> tuple[str, str | None]:
+        """D-37：挑表情（自訂表情接在文字最後；貼圖回傳 ID，跟文字一起送）。超時、出錯、不配都照原文送。
+        D-38：整則文字回話以 TEXT_REPLY_BUDGET_SEC 為上限，挑表情只用剩下的時間。"""
+        p = await emoji_pick.pick(self.brain.llm, eset, said, reply, bot_name=self.settings.bot_name,
+                                  timeout=emoji_pick.remaining(started))
+        tr.emoji_pick = p.record()
+        tr.lat("emoji_pick", p.ms)
+        if p.reason in ("timeout", "error", "bad_json", "no_time"):
+            tr.degrade(f"emoji_pick_{p.reason}")
+        log.info("挑表情：%s（%d ms）", p.entry.name if p.entry else f"不配/{p.reason}", p.ms)
+        if p.entry is None:
+            return reply, None
+        if p.entry.kind == "sticker":
+            return reply, p.entry.id
+        return f"{reply} {p.entry.render()}", None
 
     # ---------- 沒被叫到：插話判斷（B2）----------
     def _llm_busy(self) -> bool:

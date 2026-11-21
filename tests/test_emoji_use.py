@@ -168,3 +168,81 @@ def test_process_allow_false_strips_everything():
     s = cat.EmojiSet("1", ITEMS)
     assert s.process("好 :happy: [貼圖:wave]") == ("好 <:happy:11>", None)
     assert cat.process_reply("好 :happy: [貼圖:wave]", s, allow=False) == ("好", None)
+
+
+# ---------- D-37：回話寫好後挑表情 ----------
+from yuki import emoji_pick  # noqa: E402
+
+
+def test_picked_emoji_goes_after_the_reply_text(emoji_kit):
+    kit = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "對啦我最爛")
+    kit.llm.pick = {"emoji": "happy"}
+    sent, system = ask(kit)
+    assert sent == [("對啦我最爛 <:happy:11>", {"mention_author": False})]
+    assert len(kit.llm.pick_calls) == 1 and ":happy: 開心" not in system
+    pick_system, pick_user = kit.llm.pick_calls[0]
+    assert ":happy: 開心" in pick_system["content"] and "對啦我最爛" in pick_user["content"]
+    assert kit.bot.brain.history[str(kit.channel.id)][-1].text == "對啦我最爛 <:happy:11>"  # 照實際送出的記
+
+
+def test_picked_sticker_is_sent_with_stickers_kwarg(emoji_kit):
+    kit = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "晚安")
+    kit.llm.pick = {"emoji": "wave"}
+    (content, kw), = ask(kit)[0]
+    assert content == "晚安" and [o.id for o in kw["stickers"]] == [21]
+
+
+def test_pick_unknown_or_none_sends_reply_as_is(emoji_kit):
+    for result in ({"emoji": ""}, {"emoji": "not_there"}, None):
+        kit = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "好喔")
+        kit.llm.pick = result if result is not None else {}
+        assert ask(kit)[0] == [("好喔", {"mention_author": False})]
+
+
+def test_pick_error_or_timeout_sends_reply_as_is(emoji_kit, monkeypatch):
+    kit = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "好喔", )
+    kit.llm.pick, kit.llm.pick_error = {"emoji": "happy"}, RuntimeError("boom")
+    assert ask(kit)[0] == [("好喔", {"mention_author": False})]
+    monkeypatch.setattr(emoji_pick, "TEXT_REPLY_BUDGET_SEC", 1.3)  # 測試不等 10 秒
+    slow = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "好喔")
+    slow.llm.pick, slow.llm.pick_delay = {"emoji": "happy"}, 3.0
+    assert ask(slow)[0] == [("好喔", {"mention_author": False})]
+
+
+def test_no_pick_without_catalog_or_when_pacing_says_no(emoji_kit):
+    kit = emoji_kit(None, "好喔")
+    ask(kit)
+    assert kit.llm.pick_calls == []
+    kit = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "好喔")
+    kit.llm.pick = {"emoji": "happy"}
+    ask(kit, 0)
+    ask(kit, 1)
+    ask(kit, 2)                                   # 剛用過：接下來兩則不挑
+    assert len(kit.llm.pick_calls) == 1
+    sent, _ = ask(kit, 3)
+    assert len(kit.llm.pick_calls) == 2 and sent[0][0] == "好喔 <:happy:11>"
+
+
+def test_no_pick_when_the_model_already_wrote_one(emoji_kit):
+    kit = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "好喔 :dance:")
+    kit.llm.pick = {"emoji": "happy"}
+    assert ask(kit)[0] == [("好喔 <a:dance:12>", {"mention_author": False})]
+    assert kit.llm.pick_calls == []
+
+
+def test_chimed_reply_also_picks(emoji_kit):
+    decision = {"reason": "好笑", "kind": "other", "action": "reply", "participate": 0.95, "emoji": "",
+                "need_background": []}
+    kit = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "笑死", decision=decision)
+    kit.llm.pick = {"emoji": "happy"}
+    n = len(kit.sent)
+    kit.run(kit.say(PEOPLE[0], "我剛剛跌倒把手機丟進水溝"))
+    sent = [c for _, c, _ in kit.sent[n:]]
+    assert sent == ["笑死 <:happy:11>"] and len(kit.llm.pick_calls) == 1
+
+
+def test_voice_path_never_picks_emoji():
+    """語音回覆（voice/session.py）完全不呼叫挑表情。"""
+    from pathlib import Path
+    src = (Path(emoji_pick.__file__).parent / "voice" / "session.py").read_text(encoding="utf-8")
+    assert "emoji_pick" not in src and "_pick_emoji" not in src and "emoji=" not in src

@@ -47,14 +47,25 @@ class FakeLLM:
     tool=(名稱, 參數)：回覆時先呼叫一次這個工具（看程式端有沒有擋）。"""
 
     def __init__(self, reply: str = "好喔", decision: dict | None = None, *, tool=None,
-                 reply_error: Exception | None = None, decide_error: Exception | None = None):
+                 reply_error: Exception | None = None, decide_error: Exception | None = None,
+                 pick: dict | None = None, pick_error: Exception | None = None, pick_delay: float = 0.0):
         self.reply, self.decision, self.tool = reply, decision, tool
         self.reply_error, self.decide_error = reply_error, decide_error
+        # D-37 挑表情（chat_json name="emoji_pick"）：回 pick（預設不配），呼叫記在 pick_calls，不算插話判斷
+        self.pick, self.pick_error, self.pick_delay = pick or {"emoji": ""}, pick_error, pick_delay
+        self.pick_calls: list[list[dict]] = []
         self.chime_calls: list[list[dict]] = []
         self.reply_calls: list[list[dict]] = []
         self.tool_results: list[str] = []
 
     async def chat_json(self, messages, schema, **kw):
+        if kw.get("name") == "emoji_pick":
+            self.pick_calls.append(messages)
+            if self.pick_delay:
+                await asyncio.sleep(self.pick_delay)
+            if self.pick_error:
+                raise self.pick_error
+            return self.pick
         self.chime_calls.append(messages)
         if self.decide_error:
             raise self.decide_error
