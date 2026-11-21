@@ -8,9 +8,9 @@
 
 --catalog 直接指到圖鑑檔，**不看 reviewed**（評估用；Yuki 本體仍然只用 reviewed 的圖鑑）。預設是 PROFILE_FALLBACK_GUILD 的圖鑑。
 
-- reply：50 則真實對話片段當前文，用跟 Yuki 一樣的 reply system（有群組表情清單，沒有檢索工具）產生回覆，
-  後處理後統計：用到表情（或貼圖）的比例（標準 10%～30%）、壞掉的 `:名稱:`（標準 0）、一則兩個以上（標準 0）。
-  另外記後處理前的原始狀況（模型自己寫錯名稱、寫了兩個以上的次數），看後處理救了多少。
+- reply：50 則真實對話片段當前文，用跟 Yuki 一樣的 reply system（D-37 起沒有表情清單，沒有檢索工具）產生回覆，
+  後處理後統計：模型自己在文字裡寫表情（安全網 process_reply）的比例、壞掉的 `:名稱:`（標準 0）、一則兩個以上（標準 0）。
+  D-37 的「回話寫好再挑表情」評估在 scripts/eval_emoji_pick.py。
 - react：20 則「值得理一下」的訊息（封存區裡接著有人笑或恭喜的），跑插話判斷（帶 10 張表情清單），
   選 react 而且表情合適的比例（標準 >= 70%）；合適由 LLM 依 meaning 判，另外列 5 則給人工看。
 - voice：reply 的回覆（含後處理前的原始文字）和幾句固定的字串，speakable() 之後不能有 `<:`、`<a:`、`[貼圖`。
@@ -149,12 +149,11 @@ def raw_stats(text: str, eset: cat.EmojiSet) -> dict:
 
 async def eval_reply(llm, eset: cat.EmojiSet, s) -> dict:
     cases = load_cases("reply_cases")
-    block = eset.prompt_block()
-    pacing = cat.EmojiPacing()  # 跟 bot 一樣：用過之後接下來 2 則不放清單、不用（50 題當成同一個頻道依序回）
+    pacing = cat.EmojiPacing()  # 跟 bot 一樣：用過之後接下來 2 則不用（50 題當成同一個頻道依序回）
     rows = []
     for k, c in enumerate(cases, 1):
         allow = pacing.allow("eval")
-        system = prompts.reply_system(BOT_NAME, date.today(), [], emoji=block if allow else "")
+        system = prompts.reply_system(BOT_NAME, date.today(), [])  # D-37：回覆 prompt 沒有表情清單（挑表情見 eval_emoji_pick）
         lines = [to_line(m, images=False) for m in c["recent"]] + [to_line(c["latest"], images=False)]
         raw = await checked_chat(llm.chat, system, lines, BOT_NAME)  # 跟 Brain.reply 一樣（提示、壞掉檢查）
         text, sticker = cat.process_reply(raw, eset, allow=allow)
