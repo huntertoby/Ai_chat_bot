@@ -12,7 +12,7 @@ import logging
 import re
 import sqlite3
 import time
-from datetime import date
+from datetime import date, datetime
 
 from .. import trace
 from ..llm import LLMError, LMStudioClient
@@ -169,10 +169,17 @@ class ProfileBuilder:
         if not pending:
             return False
         name = self.names.get(subject_id) or pending[-1][1].subject_name
-        old_corr, rest = revise.split_corrections(self.files.read(self.guild_id, subject_id))
+        existing = self.files.read(self.guild_id, subject_id)
+        old_corr, rest = revise.split_corrections(existing)
         current = self._body(rest)
-        last_day = ""
+        last_day = revise.header_day(existing)  # 舊檔的「資料到」：判斷新資訊是不是比舊內容新
+        removed_n = 0
         for batch in self._batches(pending):
+            # 被反駁的舊內容：模型提議、程式裁決（revise.adjudicate），准的先從舊檔拿掉再合併
+            removed: list[dict] = []
+            if current and removed_n < revise.MAX_REMOVALS:
+                current, removed = await self.review(name, current, [f for _, f in batch], last_day,
+                                                     revise.MAX_REMOVALS - removed_n)
             # 「本人更正」由程式保存：資料庫裡所有的 correction + 舊檔區塊，不讓模型改寫
             corrections = revise.merge_corrections(
                 old_corr, [revise.correction_line(f) for f in self.db.corrections(self.guild_id, subject_id)])
@@ -199,8 +206,42 @@ class ProfileBuilder:
             self.files.write(self.guild_id, subject_id,
                              self._header(name, last_day) + revise.render_corrections(corrections) + current)
             self.db.mark_merged([i for i, _ in batch])
-            log.info("%s：整理了 %d 條（資料到 %s）", name, len(batch), last_day)
+            self.files.log_removed(self.guild_id, subject_id, removed)  # 合併成功才記（失敗時舊檔沒動）
+            removed_n += len(removed)
+            log.info("%s：整理了 %d 條（資料到 %s），刪掉 %d 條被反駁的", name, len(batch), last_day, len(removed))
         return True
+
+    async def review(self, name: str, current: str, facts: list[Fact], file_day: str,
+                     limit: int) -> tuple[str, list[dict]]:
+        """問模型哪些舊條目被這批新資訊推翻了，程式裁決後回傳 (拿掉准刪條目的檔案, 刪除紀錄)。出錯就不刪。"""
+        old = revise.numbered_lines(current)
+        if not old or not facts:
+            return current, []
+        lines = [f.line() for f in facts]
+        messages = [
+            {"role": "system", "content": prompts.REVIEW_SYSTEM.format(name=name)},
+            {"role": "user", "content": prompts.review_user(name, [(l.no, l.section, l.text) for l in old],
+                                                            lines, file_day)},
+        ]
+        async with trace.start("profile", guild=self.guild_id, trigger="review") as tr:
+            try:
+                data = await self.llm.chat_json(messages, prompts.REVIEW_SCHEMA, name="profile_review",
+                                                max_tokens=self.max_tokens)
+            except LLMError as e:
+                tr.outcome, tr.error = "error", str(e)[:500]
+                log.warning("%s 檢查被反駁的內容失敗（這次不刪）：%s", name, e)
+                return current, []
+            tr.final = None if data is None else json.dumps(data, ensure_ascii=False)
+        verdicts = revise.adjudicate((data or {}).get("remove") or [], old, facts, file_day, limit=limit)
+        now = datetime.now().isoformat(timespec="seconds")
+        records = []
+        for v in verdicts:
+            if not v.ok:
+                log.info("%s：不刪（%s）：%s", name, v.why, v.raw)
+                continue
+            records.append({"at": now, "section": v.line.section, "line": v.line.text, "reason": v.reason,
+                            "evidence": [{"day": f.day, "kind": f.kind, "text": f.text} for f in v.evidence]})
+        return revise.remove_lines(current, [v.line for v in verdicts if v.ok]), records
 
     async def merge(self, *, min_facts: int = 5, only: str | None = None) -> int:
         n = 0

@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -136,7 +137,34 @@ class ProfileFiles:
         tmp.write_text(text.strip() + "\n", encoding="utf-8")
         tmp.replace(p)  # 寫到一半中斷也不會留下半份檔案
 
+    def removed_path(self, guild_id: str, user_id: str) -> Path:
+        """被反駁刪掉的內容紀錄（一行一筆 JSON），可以查、可以還原。"""
+        return self.path(guild_id, user_id).with_suffix(".removed.jsonl")
+
+    def log_removed(self, guild_id: str, user_id: str, records: list[dict]) -> None:
+        if not records:
+            return
+        p = self.removed_path(guild_id, user_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            for r in records:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    def removed(self, guild_id: str, user_id: str) -> list[dict]:
+        p = self.removed_path(guild_id, user_id)
+        if not p.exists():
+            return []
+        return [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+
+    def rewrite_removed(self, guild_id: str, user_id: str, records: list[dict]) -> None:
+        p = self.removed_path(guild_id, user_id)
+        p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8")
+
     def delete(self, guild_id: str, user_id: str) -> bool:
+        """刪掉這個人的 .md（連刪除紀錄一起刪：/不要記我 也要清乾淨）。"""
+        log_ = self.removed_path(guild_id, user_id)
+        if log_.exists():
+            log_.unlink()
         p = self.path(guild_id, user_id)
         if p.exists():
             p.unlink()

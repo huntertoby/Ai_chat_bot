@@ -108,3 +108,52 @@ def merge_user(name: str, current: str, facts: list[str], corrections: list[str]
             if corrections else "")
     return (head + f"【目前的檔案】\n{current.strip() or '（還沒有檔案）'}\n\n"
             f"【新整理出的資訊】（{name}）\n" + ("\n".join(facts) or "（沒有新資訊，只要依本人更正調整檔案）"))
+
+
+# ================= 找出被反駁的舊內容（開發規格 6.5，合併前先跑） =================
+REVIEW_SYSTEM = """你在幫忙維護群組成員「{name}」的人物檔案。你會拿到檔案裡的舊條目（有編號）和一批新整理出的資訊（也有編號、日期）。
+找出「已經被新資訊推翻、不再是真的」的舊條目，提議刪掉。你只是提議，程式會再檢查。
+
+可以提議刪除的情況（新資訊要直接跟舊條目衝突）：
+- 本人更正（[correction]）否認了這條、或說現在已經不是這樣；
+- {name} 本人後來認真說了相反的事（不是（不確定）的）；
+- 較新的、確定的事實取代了舊的（換了工作、搬家、不再玩某款遊戲、跟誰分開了等），舊條目留著會誤導。
+
+不要提議刪除：
+- 新資訊只是補充、更詳細、或跟舊條目可以同時成立；
+- 新資訊是別人說的、（不確定）的、[joke] 或 [meme]；
+- 「群組梗與綽號」裡的梗：梗本來就不是事實，被反駁也不刪，除非本人更正明確要大家別再這樣講；
+- 舊條目本來就寫著「以前」「曾經」這類過去的事（過去發生過的事不會因為現在改變而變成假的）；
+- 只是過時的近況（整理檔案時會另外處理）。
+
+拿不準就不要提議。大部分時候不需要刪任何東西，回傳空陣列是正常的。
+每個提議給：line（舊條目編號）、evidence（推翻它的新資訊編號，可以多個）、reason（一句話說明衝突在哪）。"""
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "remove": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "line": {"type": "integer"},
+                    "evidence": {"type": "array", "items": {"type": "integer"}},
+                    "reason": {"type": "string"},
+                },
+                "required": ["line", "evidence", "reason"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["remove"],
+    "additionalProperties": False,
+}
+
+
+def review_user(name: str, old: list[tuple[int, str, str]], facts: list[str], file_day: str) -> str:
+    """old：[(編號, 所在小節, 原文)]；facts：新資訊（依序編號）。"""
+    olds = "\n".join(f"{no}. 〔{sec.lstrip('# ')}〕{text.strip().lstrip('- ')}" for no, sec, text in old)
+    news = "\n".join(f"#{i} {f.lstrip('- ')}" for i, f in enumerate(facts, 1))
+    since = f"（檔案資料到 {file_day}）" if file_day else ""
+    return f"【舊條目】{since}\n{olds}\n\n【新資訊】（{name}）\n{news}"

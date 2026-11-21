@@ -185,8 +185,8 @@ def test_correction_block_from_old_file_survives_merge(tmp_path):
     b = ProfileBuilder(archive, db, files, FakeLLM(text_reply=_md()), G)
     asyncio.run(b.merge_one("1"))
     assert "- （2023-01-01）阿明 說自己不是工程師" in files.read(G, "1")
-    assert "本人說的" in b.llm.calls[0][1]["content"]  # 舊檔的更正有給模型看
-    assert "## 本人更正" not in b.llm.calls[0][1]["content"].split("【目前的檔案】")[1]
+    assert "本人說的" in b.llm.calls[-1][1]["content"]  # 舊檔的更正有給模型看
+    assert "## 本人更正" not in b.llm.calls[-1][1]["content"].split("【目前的檔案】")[1]
 
 
 def test_reply_system_marks_profile_as_impression():
