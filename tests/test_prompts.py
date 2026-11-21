@@ -8,7 +8,7 @@ from yuki import prompts
 from yuki.tools import archive as archive_tools, web as web_tools
 
 REPLY_PARTS = ["PERSONA", "WEB_RULES", "SPOKEN_RULES", "OWNER_RULES", "ARCHIVE_RULES", "BACKGROUND_RULES",
-               "CHIMED_RULES", "VISION_RULES",
+               "CHIMED_RULES", "VISION_RULES", "EMOJI_PICK_SYSTEM",
                "LATEST_NOTE_LAST", "LATEST_NOTE_AT", "LATEST_NOTE_OPENINGS",
                "LATEST_NOTE_SWEAR_OK", "LATEST_NOTE_NO_SWEAR"]
 CHIME_PARTS = ["CHIME_SYSTEM", "CHIME_ATTENTION", "CHIME_EMOJI", "CHIME_EMOJI_HINT"]
