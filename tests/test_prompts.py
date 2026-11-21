@@ -8,7 +8,7 @@ from yuki import prompts
 from yuki.tools import archive as archive_tools, web as web_tools
 
 REPLY_PARTS = ["PERSONA", "WEB_RULES", "SPOKEN_RULES", "OWNER_RULES", "ARCHIVE_RULES", "BACKGROUND_RULES",
-               "EMOJI_RULES", "CHIMED_RULES", "VISION_RULES",
+               "CHIMED_RULES", "VISION_RULES",
                "LATEST_NOTE_LAST", "LATEST_NOTE_AT", "LATEST_NOTE_OPENINGS",
                "LATEST_NOTE_SWEAR_OK", "LATEST_NOTE_NO_SWEAR"]
 CHIME_PARTS = ["CHIME_SYSTEM", "CHIME_ATTENTION", "CHIME_EMOJI", "CHIME_EMOJI_HINT"]
@@ -41,11 +41,10 @@ def test_reply_prompt_does_not_point_at_blocks_that_do_not_exist():
     assert "記憶」" not in p and "群組近況" not in p
 
 
-def test_emoji_frequency_is_stated_only_when_there_is_a_catalog():
-    """表情比例只寫在 EMOJI_RULES（有圖鑑才出現）。人設只說「有群組表情時偶爾可以用」，不另外講一個比例。"""
+def test_reply_prompt_does_not_invite_group_emoji():
+    """D-37：表情在回話寫好後另外挑；人設不鼓勵在文字裡寫表情，也不講比例。"""
     assert not re.search(r"[一二三四五六七八九十\d]成", prompts.PERSONA)
-    assert "群組自己的表情與貼圖" not in prompts.reply_system("Yuki")
-    assert re.search(r"[一二三四五六七八九十\d]成", prompts.EMOJI_RULES)
+    assert "偶爾可以拿來代替" not in prompts.PERSONA
 
 
 def test_small_talk_needs_no_lookup_but_unfamiliar_things_do():

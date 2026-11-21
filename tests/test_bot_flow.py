@@ -395,17 +395,17 @@ def test_each_server_uses_only_its_own_emoji_catalog(kits):
     from yuki import emoji_catalog as cat
     item = [{"id": "11", "name": "happy", "kind": "emoji", "uses": 50, "meaning": "開心", "use": True}]
 
-    def system_for(guild, sets, **kw):
-        kit = kits(guild=guild, emoji_sets=sets, **kw)
+    def sent_for(guild, sets, **kw):  # 模型自己寫 :happy:：有用這個伺服器的圖鑑才換成群組表情
+        kit = kits(guild=guild, emoji_sets=sets, llm=FakeLLM("好 :happy:"), **kw)
         kit.run(kit.say(AMING, "yuki，在嗎"))
-        return kit.llm.reply_calls[0][0]["content"]
+        return kit.sent[0][1]
 
     both = {str(TEST_GUILD): cat.EmojiSet(str(TEST_GUILD), item), str(MAIN_GUILD): cat.EmojiSet(str(MAIN_GUILD), item)}
-    assert ":happy:" in system_for(TEST_GUILD, both)        # EMOJI_GUILD_IDS 留空＝只有測試伺服器
-    assert ":happy:" not in system_for(MAIN_GUILD, both)
-    assert ":happy:" in system_for(MAIN_GUILD, both, emoji_guild_ids=[str(MAIN_GUILD)])
+    assert sent_for(TEST_GUILD, both) == "好 <:happy:11>"        # EMOJI_GUILD_IDS 留空＝只有測試伺服器
+    assert sent_for(MAIN_GUILD, both) == "好"
+    assert sent_for(MAIN_GUILD, both, emoji_guild_ids=[str(MAIN_GUILD)]) == "好 <:happy:11>"
     only_main = {str(MAIN_GUILD): cat.EmojiSet(str(MAIN_GUILD), item)}
-    assert ":happy:" not in system_for(TEST_GUILD, only_main)  # 測試伺服器不借主伺服器的圖鑑
+    assert sent_for(TEST_GUILD, only_main) == "好"  # 測試伺服器不借主伺服器的圖鑑
 
 
 def test_mentioning_her_bot_role_counts_as_calling_but_other_roles_do_not(kits):

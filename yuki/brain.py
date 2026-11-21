@@ -300,9 +300,9 @@ class Brain:
     async def reply(self, guild_id: str, channel_key: str, author: Person, text: str, *,
                     mentions: list[Person] = (), members: list[Person] = (), voice: str = "",
                     spoken: bool = False, owner: str = "", archive_guild: str = "",
-                    background: list[str] = (), chimed: bool = False, emoji: str = "") -> str:
+                    background: list[str] = (), chimed: bool = False) -> str:
         """不先檢索：只帶發言者（和 @ 到的人）的人物檔案；群組的事讓 Yuki 自己用工具查（開發規格 6.4）。
-        emoji：群組表情清單（給 prompt 用；後處理在 bot.py）。
+        群組表情不在這裡：回話寫好後 bot.py 另外挑（D-37，emoji_pick）。
         archive_guild：查哪個伺服器的封存區（測試伺服器借主伺服器的），空字串＝guild_id。
         background：插話判斷給的 need_background（B4 第 2 層），回覆前先查；chimed：這次是她自己決定插話。"""
         s = self.settings
@@ -312,7 +312,7 @@ class Brain:
         system = prompts.reply_system(s.bot_name, date.today(), profiles, web=self.web is not None,
                                       voice=voice, spoken=spoken, owner=owner,
                                       archive=self.archive_db is not None, vision=bool(images),
-                                      background=background, chimed=chimed, emoji=emoji)
+                                      background=background, chimed=chimed)
 
         everyone = [author, *mentions, *members]
         specs: list[dict] = []

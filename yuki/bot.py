@@ -671,8 +671,7 @@ class YukiBot(commands.Bot):
                                                    members=self.members_of(message.guild), voice=voice,
                                                    owner=self.owner_name(message.guild),
                                                    archive_guild=self.archive_guild(message.guild),
-                                                   background=turn.background, chimed=turn.chimed,
-                                                   emoji=eset.prompt_block() if emoji_ok else "")
+                                                   background=turn.background, chimed=turn.chimed)
                 tr.final = reply
         except LLMError as e:
             # 用 warning：ERROR 會被 AlertLogHandler 當成另一種錯誤再通知一次

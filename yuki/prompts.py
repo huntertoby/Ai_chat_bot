@@ -22,7 +22,7 @@ PERSONA = """你是 {bot_name}，這個 Discord 群組的成員，跟大家一�
 - 只順著最新的話題接話，不要旁白整個聊天室在聊什麼。
 - 要叫人時用對話紀錄裡的名字，但不用每句都叫。回覆開頭不要加 [名字]。
 - 每則的開頭要有變化：不要每次都用髒話或對方的名字起頭，也不要跟自己前幾則回覆用一樣的字、一樣的方式開頭。
-- 一般的表情符號和 XD 盡量少用；群組有自己的表情或貼圖可用時，偶爾可以拿來代替一般表情，但不要每則都用。
+- 一般的表情符號和 XD 盡量少用；也不要在文字裡自己寫 :名稱: 這種表情代碼。
 - 被問是不是真人、是不是 AI，不要說自己是真人，打哈哈帶過就好。
 - 做不到的事不要假裝做了（例如你不能踢人、禁言、改權限），被要求時直接講你沒辦法。
 
@@ -112,13 +112,6 @@ BACKGROUND_RULES = """聊到不熟的人事物：
 - 講查到的內容要讓人聽得出是從哪裡看來的，八卦不講得像確定的事，不加油添醋；查不到就說沒聽說。
 - 成員的私事當群組裡的梗接，不講得像事實，不帶到別的頻道。"""
 
-EMOJI_RULES = """群組自己的表情與貼圖：
-- 想用表情時，在句子裡寫 :名稱:（前後各一個冒號，名稱照下面的清單，不要自己編）；每行後面是那張適合的情況。
-- 絕大多數的回覆（九成以上）不要用任何表情。只有語氣上真的有強烈情緒、而且下面剛好有一張完全對得上，才用。
-- 一則最多一個表情或一張貼圖。
-- 想用貼圖時，在整則回覆的最後寫 [貼圖:名稱]（只能用標著貼圖的）；貼圖和表情合計一則最多一個。
-{items}"""
-
 CHIMED_RULES = "這次是你自己看到對話決定插話，沒有人叫你：像群組裡順口接一句的朋友，一兩句就好，不要自我介紹、不要總結大家在聊什麼。"
 
 
@@ -147,9 +140,8 @@ def background_line(items) -> str:
 def reply_system(bot_name: str, today=None, profiles: list[tuple[str, str]] = (), *, web: bool = False,
                  voice: str = "",
                  spoken: bool = False, owner: str = "", archive: bool = False, vision: bool = False,
-                 background=(), chimed: bool = False, emoji: str = "", background_rules: bool = True) -> str:
+                 background=(), chimed: bool = False, background_rules: bool = True) -> str:
     """background_rules：B4「聊到不熟的人事物」規則，只有評估比較時才關掉。
-    emoji：群組表情清單（emoji_catalog.EmojiSet.prompt_block()），空字串＝這個伺服器沒有可用的圖鑑。
     profiles：[(名字, 檔案內容)]。web：能不能上網（有給工具才說可以，不然她會假裝查過）。
     spoken：在語音頻道裡講話（回覆會被念出來）。"""
     parts = [PERSONA.format(bot_name=bot_name)]
@@ -165,8 +157,6 @@ def reply_system(bot_name: str, today=None, profiles: list[tuple[str, str]] = ()
             parts.append(line)
     if chimed:
         parts.append(CHIMED_RULES)
-    if emoji and not spoken:
-        parts.append(EMOJI_RULES.format(items=emoji))
     if spoken:
         parts.append(SPOKEN_RULES)
     if vision:

@@ -18,12 +18,12 @@ def test_unreviewed_catalog_not_loaded(tmp_path):
     assert cat.load_all(tmp_path) == {}
 
 
-def test_prompt_has_emoji_block_only_when_given():
-    block = cat.EmojiSet("1", ITEMS).prompt_block()
-    p = prompts.reply_system("Yuki", emoji=block)
-    assert ":happy: 開心" in p and "[貼圖:wave]" in p and "群組自己的表情與貼圖" in p
-    assert "群組自己的表情與貼圖" not in prompts.reply_system("Yuki")
-    assert "群組自己的表情與貼圖" not in prompts.reply_system("Yuki", emoji=block, spoken=True)
+def test_reply_system_has_no_emoji_list():
+    """D-37：回覆 prompt 不放表情清單（回話寫好後另外挑）。"""
+    assert not hasattr(prompts, "EMOJI_RULES")
+    for kw in ({}, {"spoken": True}, {"chimed": True, "web": True, "archive": True}):
+        p = prompts.reply_system("Yuki", **kw)
+        assert "群組自己的表情與貼圖" not in p and "[貼圖:" not in p
 
 
 def test_leading_sticker_tag_not_eaten_as_name_prefix():
@@ -88,11 +88,12 @@ def ask(kit, who=0):
     return sent, kit.llm.reply_calls[-1][0]["content"]
 
 
-def test_reply_turns_emoji_names_into_group_emoji_and_shows_the_catalog(emoji_kit):
+def test_reply_still_turns_emoji_names_into_group_emoji_without_the_catalog_in_prompt(emoji_kit):
+    """安全網：模型自己寫了 :名稱: 照舊換成群組表情，一則最多一個；回覆 system 不放清單。"""
     kit = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "好喔 :happy: :dance:")
     sent, system = ask(kit)
     assert sent == [("好喔 <:happy:11>", {"mention_author": False})]  # 一則最多一個
-    assert ":happy: 開心" in system
+    assert ":happy: 開心" not in system
 
 
 def test_reply_sticker_is_attached_and_the_tag_removed(emoji_kit):
@@ -110,15 +111,15 @@ def test_without_catalog_made_up_emoji_and_stickers_are_cleaned(emoji_kit):
     assert sent == [("哈 好", {"mention_author": False})] and "群組自己的表情與貼圖" not in system
 
 
-def test_after_using_an_emoji_the_next_replies_get_no_list_and_no_emoji(emoji_kit):
+def test_after_using_an_emoji_the_next_replies_get_no_emoji(emoji_kit):
     kit = emoji_kit(cat.EmojiSet(str(TEST_GUILD), ITEMS), "好喔 :happy:")
-    sent, system = ask(kit, 0)
-    assert ":happy: 開心" in system and "<:happy:11>" in sent[0][0]
-    for who in (1, 2):  # 接下來兩則：不放清單，模型就算寫了也刪掉
-        sent, system = ask(kit, who)
-        assert ":happy: 開心" not in system and sent[0][0] == "好喔"
-    sent, system = ask(kit, 3)
-    assert ":happy: 開心" in system and "<:happy:11>" in sent[0][0]
+    sent, _ = ask(kit, 0)
+    assert "<:happy:11>" in sent[0][0]
+    for who in (1, 2):  # 接下來兩則：模型就算寫了也刪掉
+        sent, _ = ask(kit, who)
+        assert sent[0][0] == "好喔"
+    sent, _ = ask(kit, 3)
+    assert "<:happy:11>" in sent[0][0]
 
 
 def test_chime_reaction_uses_catalog_names_and_aliases_only(emoji_kit):
