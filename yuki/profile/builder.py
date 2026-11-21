@@ -16,7 +16,7 @@ from datetime import date
 
 from .. import trace
 from ..llm import LLMError, LMStudioClient
-from . import prompts
+from . import prompts, revise
 from .chunk import Segment, segments, to_lines
 from .store import KINDS, Fact, ProfileDB, ProfileFiles
 
@@ -42,6 +42,19 @@ def resolve(name: str, by_name: dict[str, str]) -> str | None:
     return by_name.get(key)
 
 
+_PUNCT = re.compile(r"[\s\W_]+")
+
+
+def _norm(text: str) -> str:
+    return _PUNCT.sub("", text or "").lower()
+
+
+def said_by(seg: Segment, author_id: str, quote: str) -> bool:
+    """quote 是不是 author_id 本人在這段裡說的（去掉空白標點後，是他某一行的一部分）。"""
+    q = _norm(quote)
+    return len(q) >= 2 and any(l.author_id == author_id and q in _norm(l.text) for l in seg.lines)
+
+
 def parse_items(data: dict | None, seg: Segment, by_name: dict[str, str],
                 names: dict[str, str]) -> list[Fact]:
     facts: list[Fact] = []
@@ -53,10 +66,13 @@ def parse_items(data: dict | None, seg: Segment, by_name: dict[str, str],
         kind = item.get("kind")
         if sid is None or not text or kind not in KINDS:
             continue
+        # 本人更正只認本人：模型給的原句要真的是 subject 自己說的（別人替他更正、模型張冠李戴都不算）
+        if kind == "correction" and not said_by(seg, sid, str(item.get("quote") or "")):
+            continue
         day = str(item.get("day") or "").strip()
         if not _DAY.match(day) or not (seg.first_day <= day <= seg.last_day):
             day = seg.last_day  # 模型亂填日期就用段落日期
-        conf = "high" if item.get("confidence") == "high" else "low"
+        conf = "high" if item.get("confidence") == "high" or kind == "correction" else "low"
         facts.append(Fact(sid, names[sid], kind, text[:200], conf, day))
     return facts
 
@@ -153,12 +169,17 @@ class ProfileBuilder:
         if not pending:
             return False
         name = self.names.get(subject_id) or pending[-1][1].subject_name
-        current = self._body(self.files.read(self.guild_id, subject_id))
+        old_corr, rest = revise.split_corrections(self.files.read(self.guild_id, subject_id))
+        current = self._body(rest)
         last_day = ""
         for batch in self._batches(pending):
+            # 「本人更正」由程式保存：資料庫裡所有的 correction + 舊檔區塊，不讓模型改寫
+            corrections = revise.merge_corrections(
+                old_corr, [revise.correction_line(f) for f in self.db.corrections(self.guild_id, subject_id)])
             messages = [
                 {"role": "system", "content": prompts.MERGE_SYSTEM.format(name=name, limit=self.profile_limit)},
-                {"role": "user", "content": prompts.merge_user(name, current, [f.line() for _, f in batch])},
+                {"role": "user", "content": prompts.merge_user(
+                    name, current, [f.line() for _, f in batch if f.kind != "correction"], corrections)},
             ]
             async with trace.start("profile", guild=self.guild_id, trigger="merge") as tr:
                 try:
@@ -170,12 +191,13 @@ class ProfileBuilder:
                 tr.final = out
                 if "## 基本資料" not in self._body(out):
                     tr.outcome, tr.error = "error", "整理結果格式不對"
-            body = self._body(out)
+            body = self._body(revise.split_corrections(out)[1])  # 模型照抄了「本人更正」也拿掉，用程式的
             if "## 基本資料" not in body:
                 log.warning("%s 整理結果格式不對，略過這批：%s", name, out[:200])
                 return False
             current, last_day = body, batch[-1][1].day
-            self.files.write(self.guild_id, subject_id, self._header(name, last_day) + current)
+            self.files.write(self.guild_id, subject_id,
+                             self._header(name, last_day) + revise.render_corrections(corrections) + current)
             self.db.mark_merged([i for i, _ in batch])
             log.info("%s：整理了 %d 條（資料到 %s）", name, len(batch), last_day)
         return True

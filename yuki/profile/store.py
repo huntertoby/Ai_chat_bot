@@ -10,7 +10,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-KINDS = ("fact", "status", "opinion", "relation", "meme", "joke")
+KINDS = ("fact", "status", "opinion", "relation", "meme", "joke", "correction")  # correction：本人更正（6.5）
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -75,6 +75,13 @@ class ProfileDB:
             "SELECT id, subject_id, subject_name, kind, text, confidence, day FROM facts"
             " WHERE guild_id=? AND subject_id=? AND merged=0 ORDER BY day, id", (guild_id, subject_id))
         return [(r[0], Fact(*r[1:])) for r in rows]
+
+    def corrections(self, guild_id: str, subject_id: str) -> list[Fact]:
+        """這個人所有的本人更正（不管整理過沒）：.md 的「本人更正」區塊由這裡產生，重建檔案也不會掉。"""
+        rows = self.db.execute(
+            "SELECT subject_id, subject_name, kind, text, confidence, day FROM facts"
+            " WHERE guild_id=? AND subject_id=? AND kind='correction' ORDER BY day, id", (guild_id, subject_id))
+        return [Fact(*r) for r in rows]
 
     def mark_merged(self, ids: list[int]) -> None:
         self.db.executemany("UPDATE facts SET merged=1 WHERE id=?", [(i,) for i in ids])
@@ -143,8 +150,9 @@ class ProfileFiles:
         return sum(self.delete(d.name, user_id) for d in self.root.iterdir() if d.is_dir())
 
     def for_prompt(self, guild_id: str, user_id: str, max_chars: int) -> str:
-        """給回覆 prompt 用：拿掉標題行，太長就截斷（各節的重點寫在前面）。"""
-        text = self.read(guild_id, user_id)
+        """給回覆 prompt 用：拿掉標題行，「本人更正」放最前面，太長就截斷（各節的重點寫在前面）。"""
+        from .revise import corrections_first
+        text = corrections_first(self.read(guild_id, user_id))
         text = "\n".join(l for l in text.splitlines() if not l.startswith("# ") and not l.startswith("> "))
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
         return text if len(text) <= max_chars else text[:max_chars].rsplit("\n", 1)[0] + "\n…"

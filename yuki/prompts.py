@@ -192,7 +192,8 @@ def reply_system(bot_name: str, today=None, profiles: list[tuple[str, str]] = ()
         # 大家在 Discord 介面上都看得到誰在語音；被問到或剛好相關時再提，不要主動報告誰進出
         parts.append("【語音頻道現況】（被問到或剛好相關時自然提起就好，不要主動報告誰進出）\n" + voice)
     for name, text in profiles:
-        parts.append(f"【人物檔案：{name}】\n{text}")
+        # 開發規格 6.5：檔案是整理出來的印象，不是事實；「本人更正」那一節放在最前面
+        parts.append(f"【人物檔案：{name}】（你對這個人的印象，可能有錯：跟對話矛盾時以對話為準，不確定就問本人）\n{text}")
     return "\n\n".join(parts)
 
 
