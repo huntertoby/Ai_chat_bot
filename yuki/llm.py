@@ -19,8 +19,25 @@ log = logging.getLogger(__name__)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
+# Gemma 4 的思考格式：<|channel>thought\n...<channel|>（LM Studio 平常會拆到 reasoning_content，
+# 沒拆時才會出現在正文）。只有開頭沒有結尾 = 被截斷在思考中，開頭以後全部丟掉，不能漏出思考。
+_CHANNEL_RE = re.compile(r"<\|channel>.*?<channel\|>", re.DOTALL)
+
+
+def _strip_channel(text: str) -> str:
+    if "<|channel>" not in text and "<channel|>" not in text:
+        return text
+    text = _CHANNEL_RE.sub("", text)
+    if "<channel|>" in text:  # 只有結尾標記（開頭被吃掉）：取最後一個結尾之後
+        text = text.rsplit("<channel|>", 1)[1]
+    if "<|channel>" in text:  # 只有開頭標記（被截斷）：開頭之後都是思考
+        text = text.split("<|channel>", 1)[0]
+    return text
+
+
 def strip_think(text: str) -> str:
-    text = _THINK_RE.sub("", text or "")
+    text = _strip_channel(text or "")
+    text = _THINK_RE.sub("", text)
     # 只有結尾標籤（開頭被 chat template 吃掉）時，取最後一個 </think> 之後的內容
     if "</think>" in text:
         text = text.rsplit("</think>", 1)[1]
